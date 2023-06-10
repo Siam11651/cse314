@@ -95,7 +95,7 @@ do
 
             if [ $unmatchedLineCount -eq 0 ]
             then
-                matchCount=$(($mathcCount + 1))
+                matchCount=$(($matchCount + 1))
             fi
         done
     elif [ $fileType -eq 2 ] # return value 2 means java
@@ -114,7 +114,7 @@ do
 
             if [ $unmatchedLineCount -eq 0 ]
             then
-                matchCount=$(($mathcCount + 1))
+                matchCount=$(($matchCount + 1))
             fi
         done
     elif [ $fileType -eq 3 ] # return value 3 means python
@@ -131,7 +131,7 @@ do
 
             if [ $unmatchedLineCount -eq 0 ]
             then
-                matchCount=$(($mathcCount + 1))
+                matchCount=$(($matchCount + 1))
             fi
         done
     fi
