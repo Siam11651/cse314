@@ -81,6 +81,8 @@ do
 
     if [ $fileType -eq 1 ]   # return value 1 means c
     then
+        codeType="C"
+
         gcc "$2/C/$roll/main.c" -o "$2/C/$roll/main.out"
 
         for testFile in "$3/"*
@@ -90,16 +92,17 @@ do
             answerFileName="$4/ans$fileNumber.txt"
 
             "$2/C/$roll/main.out" < "$testFile" > "$outFileName"
+            diff -q "$answerFileName" "$outFileName"
 
-            unmatchedLineCount=$(diff -y --suppress-common-lines "$answerFileName" "$outFileName" | wc -l)
-
-            if [ $unmatchedLineCount -eq 0 ]
+            if [ $? -eq 0 ]
             then
                 matchCount=$(($matchCount + 1))
             fi
         done
     elif [ $fileType -eq 2 ] # return value 2 means java
     then
+        codeType="Java"
+
         javac "$2/Java/$roll/Main.java"
 
         for testFile in "$3/"*
@@ -109,16 +112,17 @@ do
             answerFileName="$4/ans$fileNumber.txt"
 
             cat "$testFile" | java -cp "$2/Java/$roll" "Main" > "$outFileName"
+            diff -q "$answerFileName" "$outFileName"
 
-            unmatchedLineCount=$(diff -y --suppress-common-lines "$answerFileName" "$outFileName" | wc -l)
-
-            if [ $unmatchedLineCount -eq 0 ]
+            if [ $? -eq 0 ]
             then
                 matchCount=$(($matchCount + 1))
             fi
         done
     elif [ $fileType -eq 3 ] # return value 3 means python
     then
+        codeType="Python"
+
         for testFile in "$3/"*
         do
             fileNumber=${testFile:$start:-4}
@@ -126,10 +130,9 @@ do
             answerFileName="$4/ans$fileNumber.txt"
 
             cat "$testFile" | python3 "$2/Python/$roll/main.py" > "$outFileName"
+            diff -q "$answerFileName" "$outFileName"
 
-            unmatchedLineCount=$(diff -y --suppress-common-lines "$answerFileName" "$outFileName" | wc -l)
-
-            if [ $unmatchedLineCount -eq 0 ]
+            if [ $? -eq 0 ]
             then
                 matchCount=$(($matchCount + 1))
             fi
@@ -138,7 +141,7 @@ do
 
     unmatchedCount=$(($testFileCount - $matchCount))
 
-    echo "$roll,C,$matchCount,$unmatchedCount" >> "$2/result.csv"
+    echo "$roll,$codeType,$matchCount,$unmatchedCount" >> "$2/result.csv"
 done
 
 rm -rf "temp"
