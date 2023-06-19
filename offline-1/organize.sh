@@ -5,6 +5,16 @@
 # using argument $3 as test folder name
 # using argument $4 as answer folder name
 
+if [ $# -lt 4 ]
+then
+    echo "oraginze <submissions-directory> <target-directory> <test-directory> <answer-directory> [options]"
+    echo "Options:"
+    echo -e "-v\t\tEnable verbose mode"
+    echo -e "-noexecute\tEnable noexecute mode"
+
+    exit
+fi
+
 verboseSwitch="-v"
 noexecuteSwitch="-noexecute"
 
