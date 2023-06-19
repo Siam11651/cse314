@@ -5,6 +5,31 @@
 # using argument $3 as test folder name
 # using argument $4 as answer folder name
 
+verboseSwitch="-v"
+noexecuteSwitch="-noexecute"
+
+verbose=0
+noexecute=0
+
+if [ -n "$5" ]
+then
+    if [ "$5" = "$verboseSwitch" ]
+    then
+        verbose=1
+    elif [ "$5" = "$noexecuteSwitch" ]
+    then
+        noexecute=1
+    fi
+fi
+
+if [ -n "$6" ]
+then
+    if [ "$6" = "$noexecuteSwitch" ]
+    then
+        noexecute=1
+    fi
+fi
+
 rm -rf "$2"             # clean output first
 rm -rf "temp"           # delete temp directory if already exists
 
@@ -22,6 +47,8 @@ testFileCount=$(($(ls -l "$3" | wc -l) - 1))
 testFolderName="$3"
 testFolderNameLength=${#testFolderName}
 start=$(($testFolderNameLength + 5))
+
+[[ $verbose -ne 0 ]] && echo "Found $testFileCount test files"
 
 DetectAndPlaceFile()
 {
@@ -70,78 +97,86 @@ DetectAndPlaceFile()
 for file in "$1/"*".zip"
 do
     rm -rf "temp/"*
-    unzip "$file" -d "temp"
+    unzip -qq "$file" -d "temp"
 
     roll="${file: -11:-4}"
+
+    [[ $verbose -ne 0 ]] && echo "Organizing files of $roll"
 
     DetectAndPlaceFile "temp" $roll "$2"
 
     fileType=$?
-    matchCount=0
 
-    if [ $fileType -eq 1 ]   # return value 1 means c
+    if [ $noexecute -eq 0 ]
     then
-        codeType="C"
+        [[ $verbose -ne 0 ]] && echo "Executing files of $roll"
 
-        gcc "$2/C/$roll/main.c" -o "$2/C/$roll/main.out"
+        matchCount=0
 
-        for testFile in "$3/"*
-        do
-            fileNumber=${testFile:$start:-4}
-            outFileName="$2/C/$roll/out_$fileNumber.txt"
-            answerFileName="$4/ans$fileNumber.txt"
+        if [ $fileType -eq 1 ]   # return value 1 means c
+        then
+            codeType="C"
 
-            "$2/C/$roll/main.out" < "$testFile" > "$outFileName"
-            diff -q "$answerFileName" "$outFileName"
+            gcc "$2/C/$roll/main.c" -o "$2/C/$roll/main.out"
 
-            if [ $? -eq 0 ]
-            then
-                matchCount=$(($matchCount + 1))
-            fi
-        done
-    elif [ $fileType -eq 2 ] # return value 2 means java
-    then
-        codeType="Java"
+            for testFile in "$3/"*
+            do
+                fileNumber=${testFile:$start:-4}
+                outFileName="$2/C/$roll/out_$fileNumber.txt"
+                answerFileName="$4/ans$fileNumber.txt"
 
-        javac "$2/Java/$roll/Main.java"
+                "$2/C/$roll/main.out" < "$testFile" > "$outFileName"
+                diff -q "$answerFileName" "$outFileName" > "/dev/null"
 
-        for testFile in "$3/"*
-        do
-            fileNumber=${testFile:$start:-4}
-            outFileName="$2/Java/$roll/out_$fileNumber.txt"
-            answerFileName="$4/ans$fileNumber.txt"
+                if [ $? -eq 0 ]
+                then
+                    matchCount=$(($matchCount + 1))
+                fi
+            done
+        elif [ $fileType -eq 2 ] # return value 2 means java
+        then
+            codeType="Java"
 
-            cat "$testFile" | java -cp "$2/Java/$roll" "Main" > "$outFileName"
-            diff -q "$answerFileName" "$outFileName"
+            javac "$2/Java/$roll/Main.java"
 
-            if [ $? -eq 0 ]
-            then
-                matchCount=$(($matchCount + 1))
-            fi
-        done
-    elif [ $fileType -eq 3 ] # return value 3 means python
-    then
-        codeType="Python"
+            for testFile in "$3/"*
+            do
+                fileNumber=${testFile:$start:-4}
+                outFileName="$2/Java/$roll/out_$fileNumber.txt"
+                answerFileName="$4/ans$fileNumber.txt"
 
-        for testFile in "$3/"*
-        do
-            fileNumber=${testFile:$start:-4}
-            outFileName="$2/Python/$roll/out_$fileNumber.txt"
-            answerFileName="$4/ans$fileNumber.txt"
+                cat "$testFile" | java -cp "$2/Java/$roll" "Main" > "$outFileName"
+                diff -q "$answerFileName" "$outFileName" > "/dev/null"
 
-            cat "$testFile" | python3 "$2/Python/$roll/main.py" > "$outFileName"
-            diff -q "$answerFileName" "$outFileName"
+                if [ $? -eq 0 ]
+                then
+                    matchCount=$(($matchCount + 1))
+                fi
+            done
+        elif [ $fileType -eq 3 ] # return value 3 means python
+        then
+            codeType="Python"
 
-            if [ $? -eq 0 ]
-            then
-                matchCount=$(($matchCount + 1))
-            fi
-        done
+            for testFile in "$3/"*
+            do
+                fileNumber=${testFile:$start:-4}
+                outFileName="$2/Python/$roll/out_$fileNumber.txt"
+                answerFileName="$4/ans$fileNumber.txt"
+
+                cat "$testFile" | python3 "$2/Python/$roll/main.py" > "$outFileName"
+                diff -q "$answerFileName" "$outFileName" > "/dev/null"
+
+                if [ $? -eq 0 ]
+                then
+                    matchCount=$(($matchCount + 1))
+                fi
+            done
+        fi
+
+        unmatchedCount=$(($testFileCount - $matchCount))
+
+        echo "$roll,$codeType,$matchCount,$unmatchedCount" >> "$2/result.csv"
     fi
-
-    unmatchedCount=$(($testFileCount - $matchCount))
-
-    echo "$roll,$codeType,$matchCount,$unmatchedCount" >> "$2/result.csv"
 done
 
 rm -rf "temp"
