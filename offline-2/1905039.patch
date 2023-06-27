@@ -1,0 +1,256 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 0000000..e20e281
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,12 @@
++{
++    "files.associations": {
++        "user.h": "c",
++        "defs.h": "c",
++        "proc.h": "c",
++        "param.h": "c",
++        "types.h": "c",
++        "stat.h": "c",
++        "memlayout.h": "c",
++        "limits": "c"
++    }
++}
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 39a99d7..a3414d4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -132,6 +132,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_trace\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..9d10bf3 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -106,6 +106,7 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++int             trace(int);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+diff --git a/kernel/main.c b/kernel/main.c
+index f0d3171..184fa96 100644
+--- a/kernel/main.c
++++ b/kernel/main.c
+@@ -41,5 +41,5 @@ main()
+     plicinithart();   // ask PLIC for device interrupts
+   }
+ 
+-  scheduler();        
++  scheduler();
+ }
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 959b778..1f10e77 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -14,6 +14,8 @@ struct proc *initproc;
+ 
+ int nextpid = 1;
+ struct spinlock pid_lock;
++uint64 syscall_to_trace = 0;
++uint64 tracer_pid;
+ 
+ extern void forkret(void);
+ static void freeproc(struct proc *p);
+@@ -380,6 +382,11 @@ exit(int status)
+ 
+   release(&wait_lock);
+ 
++  if(p->pid == tracer_pid)
++  {
++    syscall_to_trace = 0; // reset just before getting to scheduler
++  }
++
+   // Jump into the scheduler, never to return.
+   sched();
+   panic("zombie exit");
+@@ -681,3 +688,18 @@ procdump(void)
+     printf("\n");
+   }
+ }
++
++// traces the given system call number for a single process
++int
++trace(int sys_call_num)
++{
++  if(sys_call_num > 22)
++  {
++    return -1;
++  }
++
++  tracer_pid = myproc()->pid;
++  syscall_to_trace = sys_call_num;
++  
++  return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..4ca5884 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,7 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_trace(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,8 +127,37 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_trace]   sys_trace,
+ };
+ 
++char *syscall_names[] = 
++{
++  [SYS_fork]    "fork",
++  [SYS_exit]    "exit",
++  [SYS_wait]    "wait",
++  [SYS_pipe]    "pipe",
++  [SYS_read]    "read",
++  [SYS_kill]    "kill",
++  [SYS_exec]    "exec",
++  [SYS_fstat]   "fstat",
++  [SYS_chdir]   "chdir",
++  [SYS_dup]     "dup",
++  [SYS_getpid]  "getpid",
++  [SYS_sbrk]    "sbrk",
++  [SYS_sleep]   "sleep",
++  [SYS_uptime]  "uptime",
++  [SYS_open]    "open",
++  [SYS_write]   "write",
++  [SYS_mknod]   "mknod",
++  [SYS_unlink]  "unlink",
++  [SYS_link]    "link",
++  [SYS_mkdir]   "mkdir",
++  [SYS_close]   "close",
++  [SYS_trace]   "trace",
++};
++
++extern uint syscall_to_trace;
++
+ void
+ syscall(void)
+ {
+@@ -135,10 +165,21 @@ syscall(void)
+   struct proc *p = myproc();
+ 
+   num = p->trapframe->a7;
++
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+     // Use num to lookup the system call function for num, call it,
+     // and store its return value in p->trapframe->a0
+-    p->trapframe->a0 = syscalls[num]();
++    uint64 return_value = syscalls[num]();
++    p->trapframe->a0 = return_value;
++    uint64 to_trace = syscall_to_trace;
++
++    if(to_trace > 0 && to_trace == num)
++    {
++      uint64 arg;
++
++      argaddr(1, &arg);
++      printf("pid: %d, syscall: %s, args: %p, return: %d\n", p->pid, syscall_names[num], arg, return_value);
++    }
+   } else {
+     printf("%d %s: unknown sys call %d\n",
+             p->pid, p->name, num);
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..fc22b30 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_trace  22
+\ No newline at end of file
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 1de184e..0d06bf2 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -89,3 +89,13 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++uint64
++sys_trace(void)
++{
++  int sys_call_num;
++
++  argint(0, &sys_call_num);
++
++  return trace(sys_call_num);
++}
+diff --git a/user/trace.c b/user/trace.c
+new file mode 100644
+index 0000000..ba2c0e3
+--- /dev/null
++++ b/user/trace.c
+@@ -0,0 +1,29 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++  int i;
++  char *nargv[MAXARG];
++
++  if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
++    fprintf(2, "Usage: %s sys_call_num command\n", argv[0]);
++    exit(1);
++  }
++
++  int num = atoi(argv[1]);
++
++  if (trace(num) < 0) {
++    fprintf(2, "%s: trace failed\n", argv[0]);
++    exit(1);
++  }
++  
++  for(i = 2; i < argc && i < MAXARG; i++){
++    nargv[i-2] = argv[i];
++  }
++  exec(nargv[0], nargv);
++  exit(0);
++}
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..0bf4333 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,7 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int trace(int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..04fc322 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,4 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("trace")
