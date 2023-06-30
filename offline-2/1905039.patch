@@ -1,9 +1,9 @@
 diff --git a/.vscode/settings.json b/.vscode/settings.json
 new file mode 100644
-index 0000000..e20e281
+index 0000000..2877141
 --- /dev/null
 +++ b/.vscode/settings.json
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +{
 +    "files.associations": {
 +        "user.h": "c",
@@ -13,7 +13,8 @@ index 0000000..e20e281
 +        "types.h": "c",
 +        "stat.h": "c",
 +        "memlayout.h": "c",
-+        "limits": "c"
++        "limits": "c",
++        "syscall.h": "c"
 +    }
 +}
 \ No newline at end of file
@@ -53,7 +54,7 @@ index f0d3171..184fa96 100644
 +  scheduler();
  }
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..1f10e77 100644
+index 959b778..25c2007 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -14,6 +14,8 @@ struct proc *initproc;
@@ -77,7 +78,7 @@ index 959b778..1f10e77 100644
    // Jump into the scheduler, never to return.
    sched();
    panic("zombie exit");
-@@ -681,3 +688,18 @@ procdump(void)
+@@ -681,3 +688,25 @@ procdump(void)
      printf("\n");
    }
  }
@@ -91,14 +92,21 @@ index 959b778..1f10e77 100644
 +    return -1;
 +  }
 +
-+  tracer_pid = myproc()->pid;
++  struct proc *process = myproc();
++
++  acquire(&process->lock);
++
++  tracer_pid = process->pid;
++
++  release(&process->lock);
++
 +  syscall_to_trace = sys_call_num;
-+  
++
 +  return 0;
 +}
 \ No newline at end of file
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index ed65409..4ca5884 100644
+index ed65409..585c191 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
 @@ -101,6 +101,7 @@ extern uint64 sys_unlink(void);
@@ -109,14 +117,14 @@ index ed65409..4ca5884 100644
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -126,8 +127,37 @@ static uint64 (*syscalls[])(void) = {
+@@ -126,8 +127,89 @@ static uint64 (*syscalls[])(void) = {
  [SYS_link]    sys_link,
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
 +[SYS_trace]   sys_trace,
  };
  
-+char *syscall_names[] = 
++char *syscall_names[] =
 +{
 +  [SYS_fork]    "fork",
 +  [SYS_exit]    "exit",
@@ -142,12 +150,64 @@ index ed65409..4ca5884 100644
 +  [SYS_trace]   "trace",
 +};
 +
++uint64 syscall_arg_count[] = 
++{
++  [SYS_fork]    0,
++  [SYS_exit]    1,
++  [SYS_wait]    1,
++  [SYS_pipe]    1,
++  [SYS_read]    3,
++  [SYS_kill]    1,
++  [SYS_exec]    2,
++  [SYS_fstat]   2,
++  [SYS_chdir]   1,
++  [SYS_dup]     1,
++  [SYS_getpid]  0,
++  [SYS_sbrk]    1,
++  [SYS_sleep]   1,
++  [SYS_uptime]  0,
++  [SYS_open]    2,
++  [SYS_write]   3,
++  [SYS_mknod]   3,
++  [SYS_unlink]  1,
++  [SYS_link]    2,
++  [SYS_mkdir]   1,
++  [SYS_close]   1,
++  [SYS_trace]   1,
++};
++
++uint64 syscall_arg_list[][6] =
++{
++  [SYS_fork]    {0, 0, 0, 0, 0, 0},
++  [SYS_exit]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
++  [SYS_wait]    {SYS_ARG_POINTER, 0, 0, 0, 0, 0},
++  [SYS_pipe]    {SYS_ARG_POINTER, 0, 0, 0, 0, 0},
++  [SYS_read]    {SYS_ARG_INT, SYS_ARG_POINTER, SYS_ARG_INT, 0, 0, 0},
++  [SYS_kill]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
++  [SYS_exec]    {SYS_ARG_CHAR_POINTER, SYS_ARG_POINTER, 0, 0, 0, 0},
++  [SYS_fstat]   {SYS_ARG_INT, SYS_ARG_POINTER, 0, 0, 0, 0},
++  [SYS_chdir]   {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
++  [SYS_dup]     {SYS_ARG_INT, 0, 0, 0, 0, 0},
++  [SYS_getpid]  {0, 0, 0, 0, 0, 0},
++  [SYS_sbrk]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
++  [SYS_sleep]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
++  [SYS_uptime]  {0, 0, 0, 0, 0, 0},
++  [SYS_open]    {SYS_ARG_CHAR_POINTER, SYS_ARG_INT, 0, 0, 0, 0},
++  [SYS_write]   {SYS_ARG_INT, SYS_ARG_POINTER, SYS_ARG_INT, 0, 0, 0},
++  [SYS_mknod]   {SYS_ARG_CHAR_POINTER, SYS_ARG_INT, SYS_ARG_INT, 0, 0, 0},
++  [SYS_unlink]  {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
++  [SYS_link]    {SYS_ARG_CHAR_POINTER, SYS_ARG_CHAR_POINTER, 0, 0, 0, 0},
++  [SYS_mkdir]   {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
++  [SYS_close]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
++  [SYS_trace]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
++};
++
 +extern uint syscall_to_trace;
 +
  void
  syscall(void)
  {
-@@ -135,10 +165,21 @@ syscall(void)
+@@ -135,10 +217,60 @@ syscall(void)
    struct proc *p = myproc();
  
    num = p->trapframe->a7;
@@ -162,23 +222,67 @@ index ed65409..4ca5884 100644
 +
 +    if(to_trace > 0 && to_trace == num)
 +    {
-+      uint64 arg;
++      uint64 args[6];
 +
-+      argaddr(1, &arg);
-+      printf("pid: %d, syscall: %s, args: %p, return: %d\n", p->pid, syscall_names[num], arg, return_value);
++      for(uint64 i = 0; i < 6; ++i)
++      {
++        args[i] = argraw(i);
++      }
++
++      printf("pid: %d, syscall: %s, args: (",
++              p->pid, syscall_names[num]);
++
++      uint64 arg_count = syscall_arg_count[num];
++
++      for(uint64 i = 0; i < arg_count; ++i)
++      {
++        uint64 arg_type = syscall_arg_list[num][i];
++
++        if(arg_type == SYS_ARG_INT)
++        {
++          int arg = (int)args[num];
++
++          printf("%d",
++                  arg);
++        } else if(arg_type == SYS_ARG_POINTER) {
++          void *arg = (void *)args[num];
++
++          printf("%p",
++                  arg);
++        } else if(arg_type == SYS_ARG_CHAR_POINTER) {
++          char *arg = (char *)args[num];
++
++          printf("%s", arg);
++        } else {
++          // unlikely case
++        }
++
++        if(i < arg_count - 1)
++        {
++          printf(", ");
++        }
++      }
++
++      printf("), return: %d\n",
++              return_value);
 +    }
    } else {
      printf("%d %s: unknown sys call %d\n",
              p->pid, p->name, num);
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index bc5f356..fc22b30 100644
+index bc5f356..629605e 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -20,3 +20,4 @@
+@@ -20,3 +20,9 @@
  #define SYS_link   19
  #define SYS_mkdir  20
  #define SYS_close  21
 +#define SYS_trace  22
++
++// System call ARGeter type numbers
++#define SYS_ARG_INT 1
++#define SYS_ARG_POINTER 2
++#define SYS_ARG_CHAR_POINTER 3
 \ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
 index 1de184e..0d06bf2 100644
@@ -200,7 +304,7 @@ index 1de184e..0d06bf2 100644
 +}
 diff --git a/user/trace.c b/user/trace.c
 new file mode 100644
-index 0000000..ba2c0e3
+index 0000000..afcf447
 --- /dev/null
 +++ b/user/trace.c
 @@ -0,0 +1,29 @@
@@ -226,7 +330,7 @@ index 0000000..ba2c0e3
 +    fprintf(2, "%s: trace failed\n", argv[0]);
 +    exit(1);
 +  }
-+  
++
 +  for(i = 2; i < argc && i < MAXARG; i++){
 +    nargv[i-2] = argv[i];
 +  }
