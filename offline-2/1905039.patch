@@ -1,22 +1,12 @@
-diff --git a/.vscode/settings.json b/.vscode/settings.json
-new file mode 100644
-index 0000000..2877141
---- /dev/null
-+++ b/.vscode/settings.json
-@@ -0,0 +1,13 @@
-+{
-+    "files.associations": {
-+        "user.h": "c",
-+        "defs.h": "c",
-+        "proc.h": "c",
-+        "param.h": "c",
-+        "types.h": "c",
-+        "stat.h": "c",
-+        "memlayout.h": "c",
-+        "limits": "c",
-+        "syscall.h": "c"
-+    }
-+}
+diff --git a/.gitignore b/.gitignore
+index 07216f3..61ed10a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -15,3 +15,4 @@ mkfs
+ kernel/kernel
+ user/usys.S
+ .gdbinit
++.vscode
 \ No newline at end of file
 diff --git a/Makefile b/Makefile
 index 39a99d7..a3414d4 100644
@@ -31,14 +21,15 @@ index 39a99d7..a3414d4 100644
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
 diff --git a/kernel/defs.h b/kernel/defs.h
-index a3c962b..9d10bf3 100644
+index a3c962b..5e3e8c9 100644
 --- a/kernel/defs.h
 +++ b/kernel/defs.h
-@@ -106,6 +106,7 @@ void            yield(void);
+@@ -106,6 +106,8 @@ void            yield(void);
  int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
  int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
  void            procdump(void);
 +int             trace(int);
++int             history(int);
  
  // swtch.S
  void            swtch(struct context*, struct context*);
@@ -54,7 +45,7 @@ index f0d3171..184fa96 100644
 +  scheduler();
  }
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..25c2007 100644
+index 959b778..8f67d23 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -14,6 +14,8 @@ struct proc *initproc;
@@ -78,7 +69,7 @@ index 959b778..25c2007 100644
    // Jump into the scheduler, never to return.
    sched();
    panic("zombie exit");
-@@ -681,3 +688,25 @@ procdump(void)
+@@ -681,3 +688,31 @@ procdump(void)
      printf("\n");
    }
  }
@@ -87,7 +78,7 @@ index 959b778..25c2007 100644
 +int
 +trace(int sys_call_num)
 +{
-+  if(sys_call_num > 22)
++  if(sys_call_num > 23)
 +  {
 +    return -1;
 +  }
@@ -104,110 +95,178 @@ index 959b778..25c2007 100644
 +
 +  return 0;
 +}
++
++int
++history(int sys_call_num)
++{
++  return 0;
++}
 \ No newline at end of file
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index ed65409..585c191 100644
+index ed65409..edffb25 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
-@@ -101,6 +101,7 @@ extern uint64 sys_unlink(void);
+@@ -5,8 +5,11 @@
+ #include "spinlock.h"
+ #include "proc.h"
+ #include "syscall.h"
++#include "syscall_stat.h"
+ #include "defs.h"
+ 
++extern uint syscall_to_trace;
++
+ // Fetch the uint64 at addr from the current process.
+ int
+ fetchaddr(uint64 addr, uint64 *ip)
+@@ -101,6 +104,8 @@ extern uint64 sys_unlink(void);
  extern uint64 sys_link(void);
  extern uint64 sys_mkdir(void);
  extern uint64 sys_close(void);
 +extern uint64 sys_trace(void);
++extern uint64 sys_history(void);
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -126,8 +127,89 @@ static uint64 (*syscalls[])(void) = {
+@@ -126,6 +131,138 @@ static uint64 (*syscalls[])(void) = {
  [SYS_link]    sys_link,
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
 +[SYS_trace]   sys_trace,
++[SYS_history] sys_history,
++};
++
++char *syscall_names[] = {
++  [SYS_fork]    "fork",
++[SYS_exit]    "exit",
++[SYS_wait]    "wait",
++[SYS_pipe]    "pipe",
++[SYS_read]    "read",
++[SYS_kill]    "kill",
++[SYS_exec]    "exec",
++[SYS_fstat]   "fstat",
++[SYS_chdir]   "chdir",
++[SYS_dup]     "dup",
++[SYS_getpid]  "getpid",
++[SYS_sbrk]    "sbrk",
++[SYS_sleep]   "sleep",
++[SYS_uptime]  "uptime",
++[SYS_open]    "open",
++[SYS_write]   "write",
++[SYS_mknod]   "mknod",
++[SYS_unlink]  "unlink",
++[SYS_link]    "link",
++[SYS_mkdir]   "mkdir",
++[SYS_close]   "close",
++[SYS_trace]   "trace",
++[SYS_history] "history",
++};
++
++uint64 syscall_arg_count[] = {
++[SYS_fork]    0,
++[SYS_exit]    1,
++[SYS_wait]    1,
++[SYS_pipe]    1,
++[SYS_read]    3,
++[SYS_kill]    1,
++[SYS_exec]    2,
++[SYS_fstat]   2,
++[SYS_chdir]   1,
++[SYS_dup]     1,
++[SYS_getpid]  0,
++[SYS_sbrk]    1,
++[SYS_sleep]   1,
++[SYS_uptime]  0,
++[SYS_open]    2,
++[SYS_write]   3,
++[SYS_mknod]   3,
++[SYS_unlink]  1,
++[SYS_link]    2,
++[SYS_mkdir]   1,
++[SYS_close]   1,
++[SYS_trace]   1,
++[SYS_history] 1,
++};
++
++uint64 syscall_arg_list[][6] = {
++[SYS_fork]    {0, 0, 0, 0, 0, 0},
++[SYS_exit]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_wait]    {SYS_ARG_POINTER, 0, 0, 0, 0, 0},
++[SYS_pipe]    {SYS_ARG_POINTER, 0, 0, 0, 0, 0},
++[SYS_read]    {SYS_ARG_INT, SYS_ARG_POINTER, SYS_ARG_INT, 0, 0, 0},
++[SYS_kill]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_exec]    {SYS_ARG_CHAR_POINTER, SYS_ARG_POINTER, 0, 0, 0, 0},
++[SYS_fstat]   {SYS_ARG_INT, SYS_ARG_POINTER, 0, 0, 0, 0},
++[SYS_chdir]   {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
++[SYS_dup]     {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_getpid]  {0, 0, 0, 0, 0, 0},
++[SYS_sbrk]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_sleep]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_uptime]  {0, 0, 0, 0, 0, 0},
++[SYS_open]    {SYS_ARG_CHAR_POINTER, SYS_ARG_INT, 0, 0, 0, 0},
++[SYS_write]   {SYS_ARG_INT, SYS_ARG_POINTER, SYS_ARG_INT, 0, 0, 0},
++[SYS_mknod]   {SYS_ARG_CHAR_POINTER, SYS_ARG_INT, SYS_ARG_INT, 0, 0, 0},
++[SYS_unlink]  {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
++[SYS_link]    {SYS_ARG_CHAR_POINTER, SYS_ARG_CHAR_POINTER, 0, 0, 0, 0},
++[SYS_mkdir]   {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
++[SYS_close]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_trace]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
++[SYS_history] {SYS_ARG_INT, 0, 0, 0, 0, 0},
++};
++
++struct syscall_stat syscall_stats[] = {
++[SYS_fork]    {"fork", 0, 0},
++[SYS_exit]    {"exit", 0, 0},
++[SYS_wait]    {"wait", 0, 0},
++[SYS_pipe]    {"pipe", 0, 0},
++[SYS_read]    {"read", 0, 0},
++[SYS_kill]    {"kill", 0, 0},
++[SYS_exec]    {"exec", 0, 0},
++[SYS_fstat]   {"fstat", 0, 0},
++[SYS_chdir]   {"chdir", 0, 0},
++[SYS_dup]     {"dup", 0, 0},
++[SYS_getpid]  {"getpid", 0, 0},
++[SYS_sbrk]    {"sbrk", 0, 0},
++[SYS_sleep]   {"sleep", 0, 0},
++[SYS_uptime]  {"uptime", 0, 0},
++[SYS_open]    {"open", 0, 0},
++[SYS_write]   {"write", 0, 0},
++[SYS_mknod]   {"mknod", 0, 0},
++[SYS_unlink]  {"unlink", 0, 0},
++[SYS_link]    {"link", 0, 0},
++[SYS_mkdir]   {"mkdir", 0, 0},
++[SYS_close]   {"close", 0, 0},
++[SYS_trace]   {"trace", 0, 0},
++[SYS_history] {"history", 0, 0},
++};
++
++struct spinlock syscall_history_locks[] = {
++[SYS_fork]    {0, "syscall_fork", 0},
++[SYS_exit]    {0, "syscall_exit", 0},
++[SYS_wait]    {0, "syscall_wait", 0},
++[SYS_pipe]    {0, "syscall_pipe", 0},
++[SYS_read]    {0, "syscall_read", 0},
++[SYS_kill]    {0, "syscall_kill", 0},
++[SYS_exec]    {0, "syscall_exec", 0},
++[SYS_fstat]   {0, "syscall_fstat", 0},
++[SYS_chdir]   {0, "syscall_chdir", 0},
++[SYS_dup]     {0, "syscall_dup", 0},
++[SYS_getpid]  {0, "syscall_getpid", 0},
++[SYS_sbrk]    {0, "syscall_sbrk", 0},
++[SYS_sleep]   {0, "syscall_sleep", 0},
++[SYS_uptime]  {0, "syscall_uptime", 0},
++[SYS_open]    {0, "syscall_open", 0},
++[SYS_write]   {0, "syscall_write", 0},
++[SYS_mknod]   {0, "syscall_mknod", 0},
++[SYS_unlink]  {0, "syscall_unlink", 0},
++[SYS_link]    {0, "syscall_link", 0},
++[SYS_mkdir]   {0, "syscall_mkdir", 0},
++[SYS_close]   {0, "syscall_close", 0},
++[SYS_trace]   {0, "syscall_trace", 0},
++[SYS_history] {0, "syscall_history", 0},
  };
  
-+char *syscall_names[] =
-+{
-+  [SYS_fork]    "fork",
-+  [SYS_exit]    "exit",
-+  [SYS_wait]    "wait",
-+  [SYS_pipe]    "pipe",
-+  [SYS_read]    "read",
-+  [SYS_kill]    "kill",
-+  [SYS_exec]    "exec",
-+  [SYS_fstat]   "fstat",
-+  [SYS_chdir]   "chdir",
-+  [SYS_dup]     "dup",
-+  [SYS_getpid]  "getpid",
-+  [SYS_sbrk]    "sbrk",
-+  [SYS_sleep]   "sleep",
-+  [SYS_uptime]  "uptime",
-+  [SYS_open]    "open",
-+  [SYS_write]   "write",
-+  [SYS_mknod]   "mknod",
-+  [SYS_unlink]  "unlink",
-+  [SYS_link]    "link",
-+  [SYS_mkdir]   "mkdir",
-+  [SYS_close]   "close",
-+  [SYS_trace]   "trace",
-+};
-+
-+uint64 syscall_arg_count[] = 
-+{
-+  [SYS_fork]    0,
-+  [SYS_exit]    1,
-+  [SYS_wait]    1,
-+  [SYS_pipe]    1,
-+  [SYS_read]    3,
-+  [SYS_kill]    1,
-+  [SYS_exec]    2,
-+  [SYS_fstat]   2,
-+  [SYS_chdir]   1,
-+  [SYS_dup]     1,
-+  [SYS_getpid]  0,
-+  [SYS_sbrk]    1,
-+  [SYS_sleep]   1,
-+  [SYS_uptime]  0,
-+  [SYS_open]    2,
-+  [SYS_write]   3,
-+  [SYS_mknod]   3,
-+  [SYS_unlink]  1,
-+  [SYS_link]    2,
-+  [SYS_mkdir]   1,
-+  [SYS_close]   1,
-+  [SYS_trace]   1,
-+};
-+
-+uint64 syscall_arg_list[][6] =
-+{
-+  [SYS_fork]    {0, 0, 0, 0, 0, 0},
-+  [SYS_exit]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+  [SYS_wait]    {SYS_ARG_POINTER, 0, 0, 0, 0, 0},
-+  [SYS_pipe]    {SYS_ARG_POINTER, 0, 0, 0, 0, 0},
-+  [SYS_read]    {SYS_ARG_INT, SYS_ARG_POINTER, SYS_ARG_INT, 0, 0, 0},
-+  [SYS_kill]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+  [SYS_exec]    {SYS_ARG_CHAR_POINTER, SYS_ARG_POINTER, 0, 0, 0, 0},
-+  [SYS_fstat]   {SYS_ARG_INT, SYS_ARG_POINTER, 0, 0, 0, 0},
-+  [SYS_chdir]   {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
-+  [SYS_dup]     {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+  [SYS_getpid]  {0, 0, 0, 0, 0, 0},
-+  [SYS_sbrk]    {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+  [SYS_sleep]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+  [SYS_uptime]  {0, 0, 0, 0, 0, 0},
-+  [SYS_open]    {SYS_ARG_CHAR_POINTER, SYS_ARG_INT, 0, 0, 0, 0},
-+  [SYS_write]   {SYS_ARG_INT, SYS_ARG_POINTER, SYS_ARG_INT, 0, 0, 0},
-+  [SYS_mknod]   {SYS_ARG_CHAR_POINTER, SYS_ARG_INT, SYS_ARG_INT, 0, 0, 0},
-+  [SYS_unlink]  {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
-+  [SYS_link]    {SYS_ARG_CHAR_POINTER, SYS_ARG_CHAR_POINTER, 0, 0, 0, 0},
-+  [SYS_mkdir]   {SYS_ARG_CHAR_POINTER, 0, 0, 0, 0, 0},
-+  [SYS_close]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+  [SYS_trace]   {SYS_ARG_INT, 0, 0, 0, 0, 0},
-+};
-+
-+extern uint syscall_to_trace;
-+
  void
- syscall(void)
- {
-@@ -135,10 +217,60 @@ syscall(void)
+@@ -135,10 +272,79 @@ syscall(void)
    struct proc *p = myproc();
  
    num = p->trapframe->a7;
@@ -216,19 +275,38 @@ index ed65409..585c191 100644
      // Use num to lookup the system call function for num, call it,
      // and store its return value in p->trapframe->a0
 -    p->trapframe->a0 = syscalls[num]();
++    uint64 args[6];
++
++    for(uint64 i = 0; i < 6; ++i)
++    {
++     args[i] = argraw(i);
++    }
++
++    acquire(&tickslock);
++
++    uint start_ticks = ticks;
++
++    release(&tickslock);
++
 +    uint64 return_value = syscalls[num]();
++
++    acquire(&tickslock);
++
++    uint end_ticks = ticks;
++
++    release(&tickslock);
++    acquire(&syscall_history_locks[num]);
++
++    ++syscall_stats[num].count;
++    syscall_stats[num].accum_time += end_ticks - start_ticks;
++
++    release(&syscall_history_locks[num]);
++
 +    p->trapframe->a0 = return_value;
 +    uint64 to_trace = syscall_to_trace;
 +
 +    if(to_trace > 0 && to_trace == num)
 +    {
-+      uint64 args[6];
-+
-+      for(uint64 i = 0; i < 6; ++i)
-+      {
-+        args[i] = argraw(i);
-+      }
-+
 +      printf("pid: %d, syscall: %s, args: (",
 +              p->pid, syscall_names[num]);
 +
@@ -270,25 +348,78 @@ index ed65409..585c191 100644
      printf("%d %s: unknown sys call %d\n",
              p->pid, p->name, num);
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index bc5f356..629605e 100644
+index bc5f356..3400cd1 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -20,3 +20,9 @@
- #define SYS_link   19
- #define SYS_mkdir  20
- #define SYS_close  21
-+#define SYS_trace  22
+@@ -1,22 +1,29 @@
+ // System call numbers
+-#define SYS_fork    1
+-#define SYS_exit    2
+-#define SYS_wait    3
+-#define SYS_pipe    4
+-#define SYS_read    5
+-#define SYS_kill    6
+-#define SYS_exec    7
+-#define SYS_fstat   8
+-#define SYS_chdir   9
+-#define SYS_dup    10
+-#define SYS_getpid 11
+-#define SYS_sbrk   12
+-#define SYS_sleep  13
+-#define SYS_uptime 14
+-#define SYS_open   15
+-#define SYS_write  16
+-#define SYS_mknod  17
+-#define SYS_unlink 18
+-#define SYS_link   19
+-#define SYS_mkdir  20
+-#define SYS_close  21
++#define SYS_fork        1
++#define SYS_exit        2
++#define SYS_wait        3
++#define SYS_pipe        4
++#define SYS_read        5
++#define SYS_kill        6
++#define SYS_exec        7
++#define SYS_fstat       8
++#define SYS_chdir       9
++#define SYS_dup         10
++#define SYS_getpid      11
++#define SYS_sbrk        12
++#define SYS_sleep       13
++#define SYS_uptime      14
++#define SYS_open        15
++#define SYS_write       16
++#define SYS_mknod       17
++#define SYS_unlink      18
++#define SYS_link        19
++#define SYS_mkdir       20
++#define SYS_close       21
++#define SYS_trace       22
++#define SYS_history     23
 +
 +// System call ARGeter type numbers
-+#define SYS_ARG_INT 1
-+#define SYS_ARG_POINTER 2
-+#define SYS_ARG_CHAR_POINTER 3
++#define SYS_ARG_INT             1
++#define SYS_ARG_POINTER         2
++#define SYS_ARG_CHAR_POINTER    3
+\ No newline at end of file
+diff --git a/kernel/syscall_stat.h b/kernel/syscall_stat.h
+new file mode 100644
+index 0000000..2475acc
+--- /dev/null
++++ b/kernel/syscall_stat.h
+@@ -0,0 +1,5 @@
++struct syscall_stat {
++    char syscall_name[16];
++    int count;
++    int accum_time;
++};
 \ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 1de184e..0d06bf2 100644
+index 1de184e..3d0800e 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
-@@ -89,3 +89,13 @@ sys_uptime(void)
+@@ -89,3 +89,23 @@ sys_uptime(void)
    release(&tickslock);
    return xticks;
  }
@@ -301,6 +432,16 @@ index 1de184e..0d06bf2 100644
 +  argint(0, &sys_call_num);
 +
 +  return trace(sys_call_num);
++}
++
++uint64
++sys_history(void)
++{
++  int sys_call_num;
++
++  argint(0, &sys_call_num);
++
++  return history(sys_call_num);
 +}
 diff --git a/user/trace.c b/user/trace.c
 new file mode 100644
@@ -338,23 +479,25 @@ index 0000000..afcf447
 +  exit(0);
 +}
 diff --git a/user/user.h b/user/user.h
-index 4d398d5..0bf4333 100644
+index 4d398d5..8308958 100644
 --- a/user/user.h
 +++ b/user/user.h
-@@ -22,6 +22,7 @@ int getpid(void);
+@@ -22,6 +22,8 @@ int getpid(void);
  char* sbrk(int);
  int sleep(int);
  int uptime(void);
 +int trace(int);
++int history(int);
  
  // ulib.c
  int stat(const char*, struct stat*);
 diff --git a/user/usys.pl b/user/usys.pl
-index 01e426e..04fc322 100755
+index 01e426e..0efe637 100755
 --- a/user/usys.pl
 +++ b/user/usys.pl
-@@ -36,3 +36,4 @@ entry("getpid");
+@@ -36,3 +36,5 @@ entry("getpid");
  entry("sbrk");
  entry("sleep");
  entry("uptime");
-+entry("trace")
++entry("trace");
++etry("history");
