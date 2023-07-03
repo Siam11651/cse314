@@ -203,7 +203,7 @@ index d021857..391bc83 100644
 +  uint64 trace;                // Trace system call
  };
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index ed65409..7558c2e 100644
+index ed65409..65bd340 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
 @@ -4,6 +4,7 @@
@@ -223,7 +223,7 @@ index ed65409..7558c2e 100644
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -126,8 +129,186 @@ static uint64 (*syscalls[])(void) = {
+@@ -126,8 +129,206 @@ static uint64 (*syscalls[])(void) = {
  [SYS_link]    sys_link,
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
@@ -407,10 +407,30 @@ index ed65409..7558c2e 100644
 +  return syscall_stats;
 +}
 +
++uint64
++exec_syscall(int syscall_num, uint64 *start_ticks, uint64 *end_ticks)
++{
++  acquire(&tickslock);
++
++  *start_ticks = ticks;
++
++  release(&tickslock);
++
++  uint64 return_value = syscalls[syscall_num]();
++
++  acquire(&tickslock);
++
++  *end_ticks = ticks;
++
++  release(&tickslock);
++
++  return return_value;
++}
++
  void
  syscall(void)
  {
-@@ -135,10 +316,80 @@ syscall(void)
+@@ -135,10 +336,72 @@ syscall(void)
    struct proc *p = myproc();
  
    num = p->trapframe->a7;
@@ -420,11 +440,8 @@ index ed65409..7558c2e 100644
      // and store its return value in p->trapframe->a0
 -    p->trapframe->a0 = syscalls[num]();
 +
-+    acquire(&tickslock);
-+
-+    uint start_ticks = ticks;
-+
-+    release(&tickslock);
++    uint64 start_ticks = 0, end_ticks = 0;
++    
 +    acquire(&syscall_stat_locks[num]);
 +
 +    ++syscall_stats[num].count;
@@ -470,20 +487,15 @@ index ed65409..7558c2e 100644
 +        }
 +      }
 +
-+      uint64 return_value = syscalls[num]();
++      uint64 return_value = exec_syscall(num, &start_ticks, &end_ticks);
 +      p->trapframe->a0 = return_value;
 +
 +      printf("), return: %d\n",
 +              return_value);
 +    } else {
-+      p->trapframe->a0 = syscalls[num]();
++      p->trapframe->a0 = exec_syscall(num, &start_ticks, &end_ticks);
 +    }
-+
-+    acquire(&tickslock);
-+
-+    uint end_ticks = ticks;
-+
-+    release(&tickslock);
++    
 +    acquire(&syscall_stat_locks[num]);
 +
 +    syscall_stats[num].accum_time += (end_ticks - start_ticks) / 10;
