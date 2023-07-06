@@ -665,6 +665,18 @@ index bc5f356..295c033 100644
 +#define SYS_ARG_POINTER         2
 +#define SYS_ARG_CHAR_POINTER    3
 \ No newline at end of file
+diff --git a/kernel/syscall_stat.h b/kernel/syscall_stat.h
+new file mode 100644
+index 0000000..2475acc
+--- /dev/null
++++ b/kernel/syscall_stat.h
+@@ -0,0 +1,5 @@
++struct syscall_stat {
++    char syscall_name[16];
++    int count;
++    int accum_time;
++};
+\ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
 index 1de184e..d50b814 100644
 --- a/kernel/sysproc.c
@@ -730,6 +742,114 @@ index 1de184e..d50b814 100644
 +  // timerhalt();
 +
 +  return 0;
++}
+diff --git a/user/exit.c b/user/exit.c
+new file mode 100644
+index 0000000..7e41897
+--- /dev/null
++++ b/user/exit.c
+@@ -0,0 +1,11 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int main()
++{
++    shutdown();
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/history.c b/user/history.c
+new file mode 100644
+index 0000000..733d3d2
+--- /dev/null
++++ b/user/history.c
+@@ -0,0 +1,48 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/syscall_stat.h"
++#include "user/user.h"
++
++void
++print_stat(struct syscall_stat stat)
++{
++    printf("syscall: %s, #: %d, time: %d\n", stat.syscall_name, stat.count, stat.accum_time);
++}
++
++int
++main(int argc, char *argv[])
++{
++    if(argc > 1)
++    {
++        int arg = atoi(argv[1]);
++        struct syscall_stat stat;
++
++        int return_value = history(arg, &stat);
++
++        if(return_value <= 0)
++        {
++            exit(-1);
++        }
++
++        print_stat(stat);
++    }
++    else
++    {
++        for(uint64 i = 1; i < SYSCALL_COUNT; ++i)
++        {
++            struct syscall_stat stat;
++
++            int return_value = history(i, &stat);
++
++            if(return_value <= 0)
++            {
++                exit(-1);
++            }
++
++            printf("%d:\t", i);
++            print_stat(stat);
++        }
++    }
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/trace.c b/user/trace.c
+new file mode 100644
+index 0000000..afcf447
+--- /dev/null
++++ b/user/trace.c
+@@ -0,0 +1,29 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++  int i;
++  char *nargv[MAXARG];
++
++  if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
++    fprintf(2, "Usage: %s sys_call_num command\n", argv[0]);
++    exit(1);
++  }
++
++  int num = atoi(argv[1]);
++
++  if (trace(num) < 0) {
++    fprintf(2, "%s: trace failed\n", argv[0]);
++    exit(1);
++  }
++
++  for(i = 2; i < argc && i < MAXARG; i++){
++    nargv[i-2] = argv[i];
++  }
++  exec(nargv[0], nargv);
++  exit(0);
 +}
 diff --git a/user/user.h b/user/user.h
 index 4d398d5..5b119ed 100644
