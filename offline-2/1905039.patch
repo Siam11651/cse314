@@ -710,7 +710,7 @@ index 0000000..2475acc
 +};
 \ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 1de184e..d50b814 100644
+index 1de184e..c7dfa97 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
 @@ -4,6 +4,7 @@
@@ -721,7 +721,7 @@ index 1de184e..d50b814 100644
  #include "proc.h"
  
  uint64
-@@ -89,3 +90,53 @@ sys_uptime(void)
+@@ -89,3 +90,48 @@ sys_uptime(void)
    release(&tickslock);
    return xticks;
  }
@@ -766,12 +766,7 @@ index 1de184e..d50b814 100644
 +
 +uint64 sys_shutdown()
 +{
-+  asm volatile("lui a1, 0x100");
-+  asm volatile("lui a2, 0x5");
-+  asm volatile("addi a2, a2, 0x555");
-+  asm volatile("sw a2, 0(a1)");
-+
-+  // timerhalt();
++  timerhalt();
 +
 +  return 0;
 +}
