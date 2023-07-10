@@ -299,7 +299,7 @@ index e16f18a..5a1bb21 100644
 +  timer_scratch[0][5] = 1;
 +}
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index ed65409..7fdfb3f 100644
+index ed65409..009d3f5 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
 @@ -4,6 +4,7 @@
@@ -534,7 +534,7 @@ index ed65409..7fdfb3f 100644
  void
  syscall(void)
  {
-@@ -135,10 +344,72 @@ syscall(void)
+@@ -135,10 +344,104 @@ syscall(void)
    struct proc *p = myproc();
  
    num = p->trapframe->a7;
@@ -591,18 +591,50 @@ index ed65409..7fdfb3f 100644
 +        }
 +      }
 +
++      printf(")");
++
++      if(p->trace == SYS_exit)
++      {
++        printf("\n");
++      }
++
++      acquire(&tickslock);
++
++      start_ticks = ticks;
++
++      release(&tickslock);
++
 +      uint64 return_value = exec_syscall(num, &start_ticks, &end_ticks);
++
++      acquire(&tickslock);
++
++      end_ticks = ticks;
++
++      release(&tickslock);
++
 +      p->trapframe->a0 = return_value;
 +
-+      printf("), return: %d\n",
++      printf(", return: %d\n",
 +              return_value);
 +    } else {
++      acquire(&tickslock);
++
++      start_ticks = ticks;
++
++      release(&tickslock);
++
 +      p->trapframe->a0 = exec_syscall(num, &start_ticks, &end_ticks);
++
++      acquire(&tickslock);
++
++      end_ticks = ticks;
++
++      release(&tickslock);
 +    }
 +
 +    acquire(&syscall_stat_locks[num]);
 +
-+    syscall_stats[num].accum_time += (end_ticks - start_ticks) / 10;
++    syscall_stats[num].accum_time += end_ticks - start_ticks;
 +
 +    release(&syscall_stat_locks[num]);
    } else {
@@ -763,7 +795,7 @@ index 0000000..7e41897
 \ No newline at end of file
 diff --git a/user/history.c b/user/history.c
 new file mode 100644
-index 0000000..733d3d2
+index 0000000..7fd25da
 --- /dev/null
 +++ b/user/history.c
 @@ -0,0 +1,48 @@
@@ -775,7 +807,7 @@ index 0000000..733d3d2
 +void
 +print_stat(struct syscall_stat stat)
 +{
-+    printf("syscall: %s, #: %d, time: %d\n", stat.syscall_name, stat.count, stat.accum_time);
++    printf("syscall: %s, #: %d, time: %d\n", stat.syscall_name, stat.count, stat.accum_time / 10);
 +}
 +
 +int
