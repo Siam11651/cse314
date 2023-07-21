@@ -9,7 +9,7 @@ index 07216f3..49d7d79 100644
 +.vscode/
 \ No newline at end of file
 diff --git a/Makefile b/Makefile
-index 39a99d7..7dba73c 100644
+index 39a99d7..82c6250 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -28,7 +28,8 @@ OBJS = \
@@ -22,16 +22,18 @@ index 39a99d7..7dba73c 100644
  
  # riscv64-unknown-elf- or riscv64-linux-gnu-
  # perhaps in /opt/riscv/bin
-@@ -132,6 +133,8 @@ UPROGS=\
+@@ -132,6 +133,10 @@ UPROGS=\
  	$U/_grind\
  	$U/_wc\
  	$U/_zombie\
 +	$U/_test1\
 +	$U/_test2\
++	$U/_dummyproc\
++	$U/_testprocinfo\
  
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
-@@ -153,7 +156,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+@@ -153,7 +158,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
  	then echo "-gdb tcp::$(GDBPORT)"; \
  	else echo "-s -p $(GDBPORT)"; fi)
  ifndef CPUS
@@ -91,7 +93,7 @@ index 6624bff..addf643 100644
 +#define TIME_LIMIT_2            2                   // queue 2 time slice weight
 +#define BOOST_INTERVAL          64                  // interval for process ticket boost
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..1dbe662 100644
+index 959b778..da4dda7 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -145,6 +145,10 @@ found:
@@ -114,7 +116,7 @@ index 959b778..1dbe662 100644
  }
  
  // Create a user page table for a given process, with no user memory,
-@@ -444,29 +450,146 @@ wait(uint64 addr)
+@@ -444,29 +450,149 @@ wait(uint64 addr)
  void
  scheduler(void)
  {
@@ -159,6 +161,7 @@ index 959b778..1dbe662 100644
 +        acquire(&p->lock);
 +        if(p->state != UNUSED) {
 +          p->tickets_current = p->tickets_original;
++          p->queue = 0;
 +        }
 +        release(&p->lock);
        }
@@ -166,6 +169,7 @@ index 959b778..1dbe662 100644
 +
 +      start_ticks = current_ticks;
 +    }
++    // printf("%s %d %d\n", proc[4].name, proc[4].state, proc[4].tickets_current);
 +
 +    if(running_proc == 0) {
 +      // if no process is being scheduled right now, one is chosen
@@ -195,7 +199,6 @@ index 959b778..1dbe662 100644
 +            } else {
 +              running_proc = p;
 +              time_slice_streak = TIME_LIMIT_1;
-+
 +              release(&p->lock);
 +
 +              break;
@@ -246,6 +249,7 @@ index 959b778..1dbe662 100644
 +          }
 +        }
 +        --time_slice_streak;
++        ++running_proc->time_slices;
 +      }
 +    } else if(running_proc->state == RUNNING) {
 +      // calculate tickets and slice streaks
@@ -261,8 +265,9 @@ index 959b778..1dbe662 100644
 +          }
 +        }
 +        --time_slice_streak;
++        ++running_proc->time_slices;
 +      }
-+    } else {
++    } else if(running_proc->state != USED) {
 +      // if process not active, reschedule another process and switch context
 +      if(running_proc->queue == 0) {
 +        running_proc->queue = 1;
@@ -455,7 +460,7 @@ index bc5f356..88bcb9c 100644
 +#define SYS_settickets  22
 +#define SYS_getpinfo    23
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 1de184e..3c196d9 100644
+index 1de184e..1d7e692 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
 @@ -5,6 +5,9 @@
@@ -468,7 +473,7 @@ index 1de184e..3c196d9 100644
  
  uint64
  sys_exit(void)
-@@ -89,3 +92,58 @@ sys_uptime(void)
+@@ -89,3 +92,56 @@ sys_uptime(void)
    release(&tickslock);
    return xticks;
  }
@@ -480,8 +485,7 @@ index 1de184e..3c196d9 100644
 +
 +  argint(0, &arg);
 +
-+  if(arg > 0)
-+  {
++  if(arg > 0) {
 +    myproc()->tickets_original = arg;
 +    myproc()->tickets_current = arg;
 +
@@ -504,18 +508,17 @@ index 1de184e..3c196d9 100644
 +
 +  for(p = proc; p < &proc[NPROC]; ++p) {
 +    acquire(&p->lock);
-+
-+    if(p->pid > 0)
-+    {
-+      process_stats.pid[next] = p->pid;
-+      process_stats.inuse[next] = !(p->state == UNUSED);
-+      process_stats.inQ[next] = 0;
-+      process_stats.tickets_original[next] = p->tickets_original;
-+      process_stats.tickets_current[next] = p->tickets_current;
-+      process_stats.time_slices[next] = 0;
-+      ++next;
++    process_stats.pid[next] = p->pid;
++    if(p->state == UNUSED) {
++      process_stats.inuse[next] = -1;
++    } else {
++      process_stats.inuse[next] = p->state == RUNNABLE || p->state == RUNNING;
 +    }
-+
++    process_stats.inQ[next] = p->queue + 1;
++    process_stats.tickets_original[next] = p->tickets_original;
++    process_stats.tickets_current[next] = p->tickets_current;
++    process_stats.time_slices[next] = p->time_slices;
++    ++next;
 +    release(&p->lock);
 +  }
 +
@@ -528,12 +531,49 @@ index 1de184e..3c196d9 100644
 +  return return_value;
 +}
 \ No newline at end of file
+diff --git a/user/dummyproc.c b/user/dummyproc.c
+new file mode 100644
+index 0000000..babe01d
+--- /dev/null
++++ b/user/dummyproc.c
+@@ -0,0 +1,30 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int main(int argc, char** argv)
++{
++    if(argc > 1)
++    {
++        int arg = atoi(argv[1]);
++
++        if(settickets(arg) == 0)
++        {
++            printf("Setting tickets to %d successful\n", arg);
++
++            while(1);
++
++            exit(0);
++        }
++        else
++        {
++            printf("Failed to set tickets\n");
++            exit(-1);
++        }
++    }
++    else
++    {
++        printf("Need one argument\n");
++        exit(-1);
++    }
++}
+\ No newline at end of file
 diff --git a/user/test1.c b/user/test1.c
 new file mode 100644
-index 0000000..471f600
+index 0000000..a86b0c4
 --- /dev/null
 +++ b/user/test1.c
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,25 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include <user/user.h>
@@ -547,10 +587,15 @@ index 0000000..471f600
 +    //     id = 2;
 +    // }
 +
-+    while(1)
++    int v = 0;
++
++    for(int i = 1; i <= 100000; ++i)
 +    {
-+        // printf("test %d: %d\n", id, i);
++        printf("a\b");
++        ++v;
 +    }
++
++    printf("test 1 shows %d\n", v);
 +
 +    exit(0);
 +}
@@ -572,3 +617,67 @@ index 0000000..b8873a3
 +    exit(0);
 +}
 \ No newline at end of file
+diff --git a/user/testprocinfo.c b/user/testprocinfo.c
+new file mode 100644
+index 0000000..6515c28
+--- /dev/null
++++ b/user/testprocinfo.c
+@@ -0,0 +1,28 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/pstat.h"
++#include "user/user.h"
++
++int main(int argc, char **argv)
++{
++    struct pstat process_stat;
++    int return_value = getpinfo(&process_stat);
++
++    if(return_value)
++    {
++        printf("Failed to get process info\n");
++        exit(-1);
++    }
++
++    printf("PID\t|\tIn Use\t|\tinQ\t|\tOriginal Tickets\t|\tCurrent Tickets\t|\tTime Slices\n");
++
++    for(uint64 i = 0; i < NPROC; ++i)
++    {
++        if(process_stat.inuse[i] != -1)
++        {
++            printf("%d\t\t%d\t\t%d\t\t\t%d\t\t\t\t%d\t\t%d\n", process_stat.pid[i], process_stat.inuse[i], process_stat.inQ[i], process_stat.tickets_original[i], process_stat.tickets_current[i], process_stat.time_slices[i]);
++        }
++    }
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..64b8048 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -1,4 +1,5 @@
+ struct stat;
++struct pstat;
+ 
+ // system calls
+ int fork(void);
+@@ -22,6 +23,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int settickets(int);
++int getpinfo(struct pstat*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..d2435c1 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("settickets");
++entry("getpinfo");
