@@ -91,7 +91,7 @@ index 6624bff..addf643 100644
 +#define TIME_LIMIT_2            2                   // queue 2 time slice weight
 +#define BOOST_INTERVAL          64                  // interval for process ticket boost
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..e358ed5 100644
+index 959b778..1dbe662 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -145,6 +145,10 @@ found:
@@ -114,7 +114,7 @@ index 959b778..e358ed5 100644
  }
  
  // Create a user page table for a given process, with no user memory,
-@@ -444,29 +450,131 @@ wait(uint64 addr)
+@@ -444,29 +450,146 @@ wait(uint64 addr)
  void
  scheduler(void)
  {
@@ -194,6 +194,7 @@ index 959b778..e358ed5 100644
 +              remain_value -= p->tickets_current;
 +            } else {
 +              running_proc = p;
++              time_slice_streak = TIME_LIMIT_1;
 +
 +              release(&p->lock);
 +
@@ -208,6 +209,7 @@ index 959b778..e358ed5 100644
 +          acquire(&next_round_robin_proc->lock);
 +          if(next_round_robin_proc->state != UNUSED && next_round_robin_proc->queue == 1) {
 +            running_proc = next_round_robin_proc;
++            time_slice_streak = TIME_LIMIT_2;
 +          }
 +          release(&next_round_robin_proc->lock);
 +
@@ -232,10 +234,23 @@ index 959b778..e358ed5 100644
 +      // Process is done running for now.
 +      // It should have changed its running_proc->state before coming back.
 +      c->proc = 0;
-+      --time_slice_streak;
++      if(time_slice_streak == 0) {
++        release(&running_proc->lock);
++        running_proc = 0;
++      } else {
++        if(running_proc->queue == 0) {
++          if(running_proc->tickets_current > 0) {
++            --running_proc->tickets_current;
++          } else {
++            running_proc->queue = 1;
++          }
++        }
++        --time_slice_streak;
++      }
 +    } else if(running_proc->state == RUNNING) {
 +      // calculate tickets and slice streaks
 +      if(time_slice_streak == 0) {
++        release(&running_proc->lock);
 +        running_proc = 0;
 +      } else {
 +        if(running_proc->queue == 0) {
