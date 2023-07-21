@@ -91,7 +91,7 @@ index 6624bff..addf643 100644
 +#define TIME_LIMIT_2            2                   // queue 2 time slice weight
 +#define BOOST_INTERVAL          64                  // interval for process ticket boost
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..fe36dc8 100644
+index 959b778..e358ed5 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -145,6 +145,10 @@ found:
@@ -114,7 +114,7 @@ index 959b778..fe36dc8 100644
  }
  
  // Create a user page table for a given process, with no user memory,
-@@ -444,29 +450,117 @@ wait(uint64 addr)
+@@ -444,29 +450,131 @@ wait(uint64 addr)
  void
  scheduler(void)
  {
@@ -154,9 +154,12 @@ index 959b778..fe36dc8 100644
 +    release(&tickslock);
 +
 +    if(current_ticks - start_ticks >= BOOST_INTERVAL) {
++      // boosting processes
 +      for(struct proc *p = proc; p < &proc[NPROC]; ++p) {
 +        acquire(&p->lock);
-+        p->tickets_current = p->tickets_original;
++        if(p->state != UNUSED) {
++          p->tickets_current = p->tickets_original;
++        }
 +        release(&p->lock);
        }
 -      release(&p->lock);
@@ -186,11 +189,13 @@ index 959b778..fe36dc8 100644
 +        uint64 remain_value = get_random_int() % total_tickets;
 +        for(struct proc *p = proc; p < &proc[NPROC]; ++p) {
 +          acquire(&p->lock);
-+          if(p->queue == 0) {
++          if(p->state != UNUSED && p->queue == 0) {
 +            if(remain_value > p->tickets_current) {
 +              remain_value -= p->tickets_current;
 +            } else {
 +              running_proc = p;
++
++              release(&p->lock);
 +
 +              break;
 +            }
@@ -200,9 +205,11 @@ index 959b778..fe36dc8 100644
 +      } else {
 +        // if queue 1 empty, schedule in round robin fasion
 +        while(running_proc == 0) {
-+          if(next_round_robin_proc->queue == 1) {
++          acquire(&next_round_robin_proc->lock);
++          if(next_round_robin_proc->state != UNUSED && next_round_robin_proc->queue == 1) {
 +            running_proc = next_round_robin_proc;
 +          }
++          release(&next_round_robin_proc->lock);
 +
 +          ++next_round_robin_proc;
 +
@@ -238,12 +245,19 @@ index 959b778..fe36dc8 100644
 +            running_proc->queue = 1;
 +          }
 +        }
-+
 +        --time_slice_streak;
 +      }
 +    } else {
 +      // if process not active, reschedule another process and switch context
++      if(running_proc->queue == 0) {
++        running_proc->queue = 1;
++      }
++      release(&running_proc->lock);
 +      running_proc = 0;
++    }
++
++    if(running_proc) {
++      release(&running_proc->lock);
      }
    }
  }
