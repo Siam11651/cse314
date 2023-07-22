@@ -9,7 +9,7 @@ index 07216f3..49d7d79 100644
 +.vscode/
 \ No newline at end of file
 diff --git a/Makefile b/Makefile
-index 39a99d7..82c6250 100644
+index 39a99d7..f66b11b 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -28,7 +28,8 @@ OBJS = \
@@ -22,6 +22,15 @@ index 39a99d7..82c6250 100644
  
  # riscv64-unknown-elf- or riscv64-linux-gnu-
  # perhaps in /opt/riscv/bin
+@@ -56,7 +57,7 @@ LD = $(TOOLPREFIX)ld
+ OBJCOPY = $(TOOLPREFIX)objcopy
+ OBJDUMP = $(TOOLPREFIX)objdump
+ 
+-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
++CFLAGS = -Wall -Werror -fno-omit-frame-pointer -ggdb -gdwarf-2
+ CFLAGS += -MD
+ CFLAGS += -mcmodel=medany
+ CFLAGS += -ffreestanding -fno-common -nostdlib -mno-relax
 @@ -132,6 +133,10 @@ UPROGS=\
  	$U/_grind\
  	$U/_wc\
@@ -93,7 +102,7 @@ index 6624bff..addf643 100644
 +#define TIME_LIMIT_2            2                   // queue 2 time slice weight
 +#define BOOST_INTERVAL          64                  // interval for process ticket boost
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..da4dda7 100644
+index 959b778..551f990 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -145,6 +145,10 @@ found:
@@ -169,15 +178,17 @@ index 959b778..da4dda7 100644
 +
 +      start_ticks = current_ticks;
 +    }
-+    // printf("%s %d %d\n", proc[4].name, proc[4].state, proc[4].tickets_current);
 +
-+    if(running_proc == 0) {
++    // printf("after boost\n");
++
++    while(running_proc == 0) {
++      // printf("new proc\n");
 +      // if no process is being scheduled right now, one is chosen
 +      uint64 total_tickets = 0;
 +      for(struct proc *p = proc; p < &proc[NPROC]; ++p) {
 +        // count total tickets
 +        acquire(&p->lock);
-+        if(p->state != UNUSED && p->queue == 0) {
++        if(p->state == RUNNABLE && p->queue == 0) {
 +          if(p->tickets_current > 0) {
 +            total_tickets += p->tickets_current;
 +          } else {
@@ -188,15 +199,17 @@ index 959b778..da4dda7 100644
 +      }
 +
 +      if(total_tickets > 0) {
++        // printf("from q1\n");
 +        // if there are tickets
 +        // this means that there is something in queue 1 which needs to be dealt
-+        uint64 remain_value = get_random_int() % total_tickets;
++        uint64 remain_value = get_random_int() % total_tickets + 1;
 +        for(struct proc *p = proc; p < &proc[NPROC]; ++p) {
 +          acquire(&p->lock);
-+          if(p->state != UNUSED && p->queue == 0) {
++          if(p->state == RUNNABLE && p->queue == 0) {
 +            if(remain_value > p->tickets_current) {
 +              remain_value -= p->tickets_current;
 +            } else {
++              // printf("found in q1\n");
 +              running_proc = p;
 +              time_slice_streak = TIME_LIMIT_1;
 +              release(&p->lock);
@@ -207,10 +220,18 @@ index 959b778..da4dda7 100644
 +          release(&p->lock);
 +        }
 +      } else {
++        // printf("from q2\n");
 +        // if queue 1 empty, schedule in round robin fasion
++        uint64 count = 0;
 +        while(running_proc == 0) {
++          if(count >= 64)
++          {
++            break;
++          }
++
 +          acquire(&next_round_robin_proc->lock);
 +          if(next_round_robin_proc->state != UNUSED && next_round_robin_proc->queue == 1) {
++            // printf("found in q2\n");
 +            running_proc = next_round_robin_proc;
 +            time_slice_streak = TIME_LIMIT_2;
 +          }
@@ -221,11 +242,15 @@ index 959b778..da4dda7 100644
 +          if(next_round_robin_proc == &proc[NPROC]) {
 +            next_round_robin_proc = proc;
 +          }
++          ++count;
 +        }
 +      }
 +    }
 +
 +    acquire(&running_proc->lock);
++    // printf("%d %d %d %d %d\n", proc[2].pid, proc[2].state, proc[2].queue, proc[2].tickets_current, time_slice_streak);
++    // printf("%d %d %d %d %d\n", proc[3].pid, proc[3].state, proc[3].queue, proc[3].tickets_current, time_slice_streak);
++    // printf("%d %d %d %d %d\n", running_proc->pid, running_proc->state, running_proc->queue, running_proc->tickets_current, time_slice_streak);
 +    if(running_proc->state == RUNNABLE) {
 +      // Switch to chosen process.  It is the process's job
 +      // to release its lock and then reacquire it
@@ -237,40 +262,24 @@ index 959b778..da4dda7 100644
 +      // Process is done running for now.
 +      // It should have changed its running_proc->state before coming back.
 +      c->proc = 0;
-+      if(time_slice_streak == 0) {
-+        release(&running_proc->lock);
-+        running_proc = 0;
-+      } else {
-+        if(running_proc->queue == 0) {
-+          if(running_proc->tickets_current > 0) {
-+            --running_proc->tickets_current;
-+          } else {
-+            running_proc->queue = 1;
-+          }
-+        }
-+        --time_slice_streak;
-+        ++running_proc->time_slices;
-+      }
-+    } else if(running_proc->state == RUNNING) {
-+      // calculate tickets and slice streaks
-+      if(time_slice_streak == 0) {
-+        release(&running_proc->lock);
-+        running_proc = 0;
-+      } else {
-+        if(running_proc->queue == 0) {
-+          if(running_proc->tickets_current > 0) {
-+            --running_proc->tickets_current;
-+          } else {
-+            running_proc->queue = 1;
-+          }
-+        }
-+        --time_slice_streak;
-+        ++running_proc->time_slices;
-+      }
-+    } else if(running_proc->state != USED) {
-+      // if process not active, reschedule another process and switch context
++
 +      if(running_proc->queue == 0) {
-+        running_proc->queue = 1;
++        --running_proc->tickets_current;
++        if(running_proc->tickets_current == 0) {
++          running_proc->queue = 1;
++        }
++      }
++      --time_slice_streak;
++      ++running_proc->time_slices;
++      if(time_slice_streak <= 0) {
++        release(&running_proc->lock);
++        running_proc = 0;
++      }
++      // printf("exit runnable\n");
++    } else if(running_proc->state == SLEEPING || running_proc->state == ZOMBIE) {
++      // if process not active, reschedule another process and switch context
++      if(running_proc->queue == 1) {
++        running_proc->queue = 0;
 +      }
 +      release(&running_proc->lock);
 +      running_proc = 0;
@@ -318,10 +327,10 @@ index 0000000..4d50dc0
 \ No newline at end of file
 diff --git a/kernel/random.c b/kernel/random.c
 new file mode 100644
-index 0000000..12e835b
+index 0000000..edda688
 --- /dev/null
 +++ b/kernel/random.c
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,23 @@
 +#include "types.h"
 +#include "param.h"
 +#include "memlayout.h"
@@ -330,22 +339,20 @@ index 0000000..12e835b
 +#include "proc.h"
 +#include "defs.h"
 +
-+#define CONSTANT_1 6
-+#define CONSTANT_2 9
-+#define CONSTANT_3 420
-+
-+uint64 seed = 0;
-+
-+void set_seed(uint64 value)
-+{
-+    seed = value;
-+}
-+
 +uint64 get_random_int()
 +{
-+    seed = (CONSTANT_1 * seed + CONSTANT_2) % CONSTANT_3;
++  static unsigned int z1 = 12345, z2 = 12345, z3 = 12345, z4 = 12345;
++  unsigned int b;
++  b  = ((z1 << 6) ^ z1) >> 13;
++  z1 = ((z1 & 4294967294U) << 18) ^ b;
++  b  = ((z2 << 2) ^ z2) >> 27; 
++  z2 = ((z2 & 4294967288U) << 2) ^ b;
++  b  = ((z3 << 13) ^ z3) >> 21;
++  z3 = ((z3 & 4294967280U) << 7) ^ b;
++  b  = ((z4 << 3) ^ z4) >> 12;
++  z4 = ((z4 & 4294967168U) << 13) ^ b;
 +
-+    return seed;
++  return (z1 ^ z2 ^ z3 ^ z4) / 2;
 +}
 \ No newline at end of file
 diff --git a/kernel/syscall.c b/kernel/syscall.c
@@ -533,10 +540,10 @@ index 1de184e..1d7e692 100644
 \ No newline at end of file
 diff --git a/user/dummyproc.c b/user/dummyproc.c
 new file mode 100644
-index 0000000..babe01d
+index 0000000..9a85e6e
 --- /dev/null
 +++ b/user/dummyproc.c
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -550,6 +557,7 @@ index 0000000..babe01d
 +        if(settickets(arg) == 0)
 +        {
 +            printf("Setting tickets to %d successful\n", arg);
++            // fork();
 +
 +            while(1);
 +
