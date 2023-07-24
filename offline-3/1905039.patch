@@ -51,67 +51,6 @@ index 39a99d7..f66b11b 100644
  endif
  
  QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
-diff --git a/README b/README
-index 5b711b1..ed8bba5 100644
---- a/README
-+++ b/README
-@@ -6,7 +6,7 @@ ACKNOWLEDGMENTS
- 
- xv6 is inspired by John Lions's Commentary on UNIX 6th Edition (Peer
- to Peer Communications; ISBN: 1-57398-013-7; 1st edition (June 14,
--2000)).  See also https://pdos.csail.mit.edu/6.828/, which provides
-+2000)).  See also https://pdos.csail.mit.edu/6.1810/, which provides
- pointers to on-line resources for v6.
- 
- The following people have made contributions: Russ Cox (context switching,
-@@ -14,29 +14,31 @@ locking), Cliff Frey (MP), Xiao Yu (MP), Nickolai Zeldovich, and Austin
- Clements.
- 
- We are also grateful for the bug reports and patches contributed by
--Takahiro Aoyagi, Silas Boyd-Wickizer, Anton Burtsev, Ian Chen, Dan
--Cross, Cody Cutler, Mike CAT, Tej Chajed, Asami Doi, eyalz800, Nelson
--Elhage, Saar Ettinger, Alice Ferrazzi, Nathaniel Filardo, flespark,
--Peter Froehlich, Yakir Goaron, Shivam Handa, Matt Harvey, Bryan Henry,
--jaichenhengjie, Jim Huang, Matúš Jókay, Alexander Kapshuk, Anders
--Kaseorg, kehao95, Wolfgang Keller, Jungwoo Kim, Jonathan Kimmitt,
--Eddie Kohler, Vadim Kolontsov, Austin Liew, l0stman, Pavan
--Maddamsetti, Imbar Marinescu, Yandong Mao, Matan Shabtay, Hitoshi
--Mitake, Carmi Merimovich, Mark Morrissey, mtasm, Joel Nider,
--OptimisticSide, Greg Price, Jude Rich, Ayan Shafqat, Eldar Sehayek,
--Yongming Shen, Fumiya Shigemitsu, Cam Tenny, tyfkda, Warren Toomey,
--Stephen Tu, Rafael Ubal, Amane Uehara, Pablo Ventura, Xi Wang, Keiichi
--Watanabe, Nicolas Wolovick, wxdao, Grant Wu, Jindong Zhang, Icenowy
--Zheng, ZhUyU1997, and Zou Chang Wei.
-+Takahiro Aoyagi, Silas Boyd-Wickizer, Anton Burtsev, carlclone, Ian
-+Chen, Dan Cross, Cody Cutler, Mike CAT, Tej Chajed, Asami Doi,
-+eyalz800, Nelson Elhage, Saar Ettinger, Alice Ferrazzi, Nathaniel
-+Filardo, flespark, Peter Froehlich, Yakir Goaron, Shivam Handa, Matt
-+Harvey, Bryan Henry, jaichenhengjie, Jim Huang, Matúš Jókay, John
-+Jolly, Alexander Kapshuk, Anders Kaseorg, kehao95, Wolfgang Keller,
-+Jungwoo Kim, Jonathan Kimmitt, Eddie Kohler, Vadim Kolontsov, Austin
-+Liew, l0stman, Pavan Maddamsetti, Imbar Marinescu, Yandong Mao, Matan
-+Shabtay, Hitoshi Mitake, Carmi Merimovich, Mark Morrissey, mtasm, Joel
-+Nider, Hayato Ohhashi, OptimisticSide, Harry Porter, Greg Price, Jude
-+Rich, segfault, Ayan Shafqat, Eldar Sehayek, Yongming Shen, Fumiya
-+Shigemitsu, Cam Tenny, tyfkda, Warren Toomey, Stephen Tu, Rafael Ubal,
-+Amane Uehara, Pablo Ventura, Xi Wang, WaheedHafez, Keiichi Watanabe,
-+Nicolas Wolovick, wxdao, Grant Wu, Jindong Zhang, Icenowy Zheng,
-+ZhUyU1997, and Zou Chang Wei.
-+
- 
- The code in the files that constitute xv6 is
--Copyright 2006-2020 Frans Kaashoek, Robert Morris, and Russ Cox.
-+Copyright 2006-2022 Frans Kaashoek, Robert Morris, and Russ Cox.
- 
- ERROR REPORTS
- 
- Please send errors and suggestions to Frans Kaashoek and Robert Morris
- (kaashoek,rtm@mit.edu).  The main purpose of xv6 is as a teaching
--operating system for MIT's 6.S081, so we are more interested in
-+operating system for MIT's 6.1810, so we are more interested in
- simplifications and clarifications than new features.
- 
- BUILDING AND RUNNING XV6
 diff --git a/kernel/defs.h b/kernel/defs.h
 index a3c962b..43e87ae 100644
 --- a/kernel/defs.h
@@ -141,7 +80,7 @@ index 6624bff..b494d7b 100644
 +#define BOOST_INTERVAL          64                  // interval for process ticket boost
 \ No newline at end of file
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..ed35be4 100644
+index 959b778..6f78bb4 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -145,6 +145,10 @@ found:
@@ -168,14 +107,14 @@ index 959b778..ed35be4 100644
    // Cause fork to return 0 in the child.
    np->trapframe->a0 = 0;
  
-+  // set tickets equal to parent
++  // set tickets equal to parents
 +  np->tickets_original = p->tickets_original;
-+  np->tickets_current = p->tickets_original;
++  np->tickets_current = p->tickets_current;
 +
    // increment reference counts on open file descriptors.
    for(i = 0; i < NOFILE; i++)
      if(p->ofile[i])
-@@ -444,29 +454,145 @@ wait(uint64 addr)
+@@ -444,29 +454,140 @@ wait(uint64 addr)
  void
  scheduler(void)
  {
@@ -255,7 +194,6 @@ index 959b778..ed35be4 100644
 +            if(remain_value > p->tickets_current) {
 +              remain_value -= p->tickets_current;
 +            } else {
-+              // printf("found in q1\n");
 +              running_proc = p;
 +              time_slice_streak = TIME_LIMIT_1;
 +              release(&p->lock);
@@ -266,12 +204,6 @@ index 959b778..ed35be4 100644
 +          release(&p->lock);
 +        }
 +      } else {
-+        // reset tickets as total tickets 0
-+        for(struct proc *p = proc; p < &proc[NPROC]; ++p) {
-+          if(p->state != UNUSED) {
-+            p->tickets_current = p->tickets_original;
-+          }
-+        }
 +        // if queue 1 empty, schedule in round robin fasion
 +        uint64 count = 0;
 +        while(running_proc == 0) {
@@ -311,14 +243,16 @@ index 959b778..ed35be4 100644
 +      c->proc = 0;
 +
 +      if(running_proc->queue == 0) {
-+        --running_proc->tickets_current;
-+        if(running_proc->tickets_current == 0) {
-+          running_proc->queue = 1;
++        if(running_proc->tickets_current > 0) {
++          --running_proc->tickets_current;
 +        }
 +      }
 +      --time_slice_streak;
 +      ++running_proc->time_slices;
 +      if(time_slice_streak <= 0) {
++        if(running_proc->queue == 0) {
++          running_proc->queue = 1;
++        }
 +        release(&running_proc->lock);
 +        running_proc = 0;
 +      }
@@ -349,6 +283,58 @@ index d021857..3ae020a 100644
 +  uint8 queue;                 // scheuler queue
 +  uint64 time_slices;          // time slices since process creation
  };
+diff --git a/kernel/pstat.h b/kernel/pstat.h
+new file mode 100644
+index 0000000..4d50dc0
+--- /dev/null
++++ b/kernel/pstat.h
+@@ -0,0 +1,15 @@
++#ifndef _PSTAT_H_
++#define _PSTAT_H_
++
++#include "param.h"
++
++struct pstat {
++    int pid[NPROC];                 // the process ID of each process
++    int inuse[NPROC];               // whether this slot of the process table is being used (1 or 0)
++    int inQ[NPROC];                 // which queue the process is currently in
++    int tickets_original[NPROC];    // the number of tickets each process originally had
++    int tickets_current[NPROC];     // the number of tickets each process currently has
++    int time_slices[NPROC];         // the number of time slices each process has been scheduled
++};
++
++#endif // _PSTAT_H_
+\ No newline at end of file
+diff --git a/kernel/random.c b/kernel/random.c
+new file mode 100644
+index 0000000..39e5c21
+--- /dev/null
++++ b/kernel/random.c
+@@ -0,0 +1,23 @@
++#include "types.h"
++#include "param.h"
++#include "memlayout.h"
++#include "riscv.h"
++#include "spinlock.h"
++#include "proc.h"
++#include "defs.h"
++
++uint64 get_random_int()
++{
++  static unsigned int z1 = 12345, z2 = 12345, z3 = 12345, z4 = 12345;
++  unsigned int b;
++  b  = ((z1 << 6) ^ z1) >> 13;
++  z1 = ((z1 & 4294967294U) << 18) ^ b;
++  b  = ((z2 << 2) ^ z2) >> 27;
++  z2 = ((z2 & 4294967288U) << 2) ^ b;
++  b  = ((z3 << 13) ^ z3) >> 21;
++  z3 = ((z3 & 4294967280U) << 7) ^ b;
++  b  = ((z4 << 3) ^ z4) >> 12;
++  z4 = ((z4 & 4294967168U) << 13) ^ b;
++
++  return (z1 ^ z2 ^ z3 ^ z4) / 2;
++}
+\ No newline at end of file
 diff --git a/kernel/syscall.c b/kernel/syscall.c
 index ed65409..f315343 100644
 --- a/kernel/syscall.c
@@ -372,16 +358,55 @@ index ed65409..f315343 100644
  
  void
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index bc5f356..fd6756a 100644
+index bc5f356..88bcb9c 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -20,3 +20,5 @@
- #define SYS_link   19
- #define SYS_mkdir  20
- #define SYS_close  21
+@@ -1,22 +1,24 @@
+ // System call numbers
+-#define SYS_fork    1
+-#define SYS_exit    2
+-#define SYS_wait    3
+-#define SYS_pipe    4
+-#define SYS_read    5
+-#define SYS_kill    6
+-#define SYS_exec    7
+-#define SYS_fstat   8
+-#define SYS_chdir   9
+-#define SYS_dup    10
+-#define SYS_getpid 11
+-#define SYS_sbrk   12
+-#define SYS_sleep  13
+-#define SYS_uptime 14
+-#define SYS_open   15
+-#define SYS_write  16
+-#define SYS_mknod  17
+-#define SYS_unlink 18
+-#define SYS_link   19
+-#define SYS_mkdir  20
+-#define SYS_close  21
++#define SYS_fork        1
++#define SYS_exit        2
++#define SYS_wait        3
++#define SYS_pipe        4
++#define SYS_read        5
++#define SYS_kill        6
++#define SYS_exec        7
++#define SYS_fstat       8
++#define SYS_chdir       9
++#define SYS_dup         10
++#define SYS_getpid      11
++#define SYS_sbrk        12
++#define SYS_sleep       13
++#define SYS_uptime      14
++#define SYS_open        15
++#define SYS_write       16
++#define SYS_mknod       17
++#define SYS_unlink      18
++#define SYS_link        19
++#define SYS_mkdir       20
++#define SYS_close       21
 +#define SYS_settickets  22
 +#define SYS_getpinfo    23
-\ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
 index 1de184e..1d7e692 100644
 --- a/kernel/sysproc.c
@@ -452,6 +477,128 @@ index 1de184e..1d7e692 100644
 +  release(&this_proc->lock);
 +
 +  return return_value;
++}
+\ No newline at end of file
+diff --git a/user/dummyproc.c b/user/dummyproc.c
+new file mode 100644
+index 0000000..9a85e6e
+--- /dev/null
++++ b/user/dummyproc.c
+@@ -0,0 +1,31 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int main(int argc, char** argv)
++{
++    if(argc > 1)
++    {
++        int arg = atoi(argv[1]);
++
++        if(settickets(arg) == 0)
++        {
++            printf("Setting tickets to %d successful\n", arg);
++            // fork();
++
++            while(1);
++
++            exit(0);
++        }
++        else
++        {
++            printf("Failed to set tickets\n");
++            exit(-1);
++        }
++    }
++    else
++    {
++        printf("Need one argument\n");
++        exit(-1);
++    }
++}
+\ No newline at end of file
+diff --git a/user/test1.c b/user/test1.c
+new file mode 100644
+index 0000000..a86b0c4
+--- /dev/null
++++ b/user/test1.c
+@@ -0,0 +1,25 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include <user/user.h>
++
++int main()
++{
++    // int id = 1;
++
++    // if(fork() == 0)
++    // {
++    //     id = 2;
++    // }
++
++    int v = 0;
++
++    for(int i = 1; i <= 100000; ++i)
++    {
++        printf("a\b");
++        ++v;
++    }
++
++    printf("test 1 shows %d\n", v);
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/test2.c b/user/test2.c
+new file mode 100644
+index 0000000..b8873a3
+--- /dev/null
++++ b/user/test2.c
+@@ -0,0 +1,10 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include <user/user.h>
++
++int main()
++{
++    printf("pid = %d\n", getpid());
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/testprocinfo.c b/user/testprocinfo.c
+new file mode 100644
+index 0000000..6515c28
+--- /dev/null
++++ b/user/testprocinfo.c
+@@ -0,0 +1,28 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/pstat.h"
++#include "user/user.h"
++
++int main(int argc, char **argv)
++{
++    struct pstat process_stat;
++    int return_value = getpinfo(&process_stat);
++
++    if(return_value)
++    {
++        printf("Failed to get process info\n");
++        exit(-1);
++    }
++
++    printf("PID\t|\tIn Use\t|\tinQ\t|\tOriginal Tickets\t|\tCurrent Tickets\t|\tTime Slices\n");
++
++    for(uint64 i = 0; i < NPROC; ++i)
++    {
++        if(process_stat.inuse[i] != -1)
++        {
++            printf("%d\t\t%d\t\t%d\t\t\t%d\t\t\t\t%d\t\t%d\n", process_stat.pid[i], process_stat.inuse[i], process_stat.inQ[i], process_stat.tickets_original[i], process_stat.tickets_current[i], process_stat.time_slices[i]);
++        }
++    }
++
++    exit(0);
 +}
 \ No newline at end of file
 diff --git a/user/user.h b/user/user.h
