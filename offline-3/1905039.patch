@@ -80,7 +80,7 @@ index 6624bff..b494d7b 100644
 +#define BOOST_INTERVAL          64                  // interval for process ticket boost
 \ No newline at end of file
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..6f78bb4 100644
+index 959b778..6af709d 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -145,6 +145,10 @@ found:
@@ -114,7 +114,7 @@ index 959b778..6f78bb4 100644
    // increment reference counts on open file descriptors.
    for(i = 0; i < NOFILE; i++)
      if(p->ofile[i])
-@@ -444,29 +454,140 @@ wait(uint64 addr)
+@@ -444,29 +454,142 @@ wait(uint64 addr)
  void
  scheduler(void)
  {
@@ -228,6 +228,8 @@ index 959b778..6f78bb4 100644
 +        }
 +      }
 +    }
++
++    // printf("%d %d %d %d\n", proc[3].pid, proc[3].state, proc[3].queue, proc[3].tickets_current);
 +
 +    acquire(&running_proc->lock);
 +    if(running_proc->state == RUNNABLE) {
@@ -479,12 +481,24 @@ index 1de184e..1d7e692 100644
 +  return return_value;
 +}
 \ No newline at end of file
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..485666b 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -10,6 +10,7 @@ struct spinlock tickslock;
+ uint ticks;
+ 
+ extern char trampoline[], uservec[], userret[];
++extern struct proc proc[NPROC];
+ 
+ // in kernelvec.S, calls kerneltrap().
+ void kernelvec();
 diff --git a/user/dummyproc.c b/user/dummyproc.c
 new file mode 100644
-index 0000000..9a85e6e
+index 0000000..77eceb8
 --- /dev/null
 +++ b/user/dummyproc.c
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,43 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -498,11 +512,23 @@ index 0000000..9a85e6e
 +        if(settickets(arg) == 0)
 +        {
 +            printf("Setting tickets to %d successful\n", arg);
-+            // fork();
++            int pid = fork();
 +
-+            while(1);
++            if(pid == 0)
++            {
++                while(1);
 +
-+            exit(0);
++                exit(0);
++            }
++            else if(pid < 0)
++            {
++                printf("Failed to create dummyproc\n", arg);
++                exit(-1);
++            }
++            else
++            {
++                exit(0);
++            }
 +        }
 +        else
 +        {
