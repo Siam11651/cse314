@@ -8,4 +8,6 @@ add_executable(offline-4
     "src/student.cpp"
     "src/group.cpp"
     "src/stuff.cpp"
+    "src/individual.cpp"
+    "src/timer.cpp"
 )

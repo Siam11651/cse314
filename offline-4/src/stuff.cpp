@@ -7,41 +7,21 @@ size_t offline_4::stuff::reader_count = 0;
 std::mutex offline_4::stuff::reader_count_lock;
 std::mutex offline_4::stuff::read_write_lock;
 
-offline_4::stuff::stuff(const size_t &id)
+offline_4::stuff::stuff(const size_t &id) : individual(id)
 {
-    set_id(id);
+    
+}
 
-    action = [this]()
+void offline_4::stuff::action()
+{
+    while(true)
     {
-        while(true)
-        {
-            offline_4::stuff::increment_reader_count();
+        offline_4::stuff::increment_reader_count();
 
-            std::osyncstream(std::cout) << "Staff " << get_id() << " has started reading the entry book at time 13. No. of submission = " << offline_4::stuff::submission_count << std::endl;
+        std::osyncstream(std::cout) << "Staff " << get_id() << " has started reading the entry book at time 13. No. of submission = " << offline_4::stuff::submission_count << std::endl;
 
-            offline_4::stuff::decrement_reader_count();
-        }
-    };
-}
-
-void offline_4::stuff::set_id(const size_t &id)
-{
-    this->id = id;
-}
-
-size_t offline_4::stuff::get_id() const
-{
-    return id;
-}
-
-void offline_4::stuff::start_action()
-{
-    thread = std::thread(action);
-}
-
-void offline_4::stuff::join_thread()
-{
-    thread.join();
+        offline_4::stuff::decrement_reader_count();
+    }
 }
 
 void offline_4::stuff::increment_reader_count()
