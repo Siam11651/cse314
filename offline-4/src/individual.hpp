@@ -11,11 +11,9 @@ namespace offline_4
         uint64_t id;
         std::thread thread;
 
-        void sleep(const uint64_t &seconds);
-
     public:
-        individual(const size_t &id = 0);
-        void set_id(const size_t &id);
+        individual(const uint64_t &id = 0);
+        void set_id(const uint64_t &id);
         uint64_t get_id() const;
         void start_action();
         void join_thread();

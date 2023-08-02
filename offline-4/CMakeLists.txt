@@ -7,7 +7,8 @@ add_executable(offline-4
     "src/main.cpp"
     "src/student.cpp"
     "src/group.cpp"
-    "src/stuff.cpp"
+    "src/staff.cpp"
     "src/individual.cpp"
     "src/timer.cpp"
+    "src/random.cpp"
 )

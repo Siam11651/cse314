@@ -2,6 +2,8 @@
 #include <vector>
 #include "student.hpp"
 #include "group.hpp"
+#include "staff.hpp"
+#include "timer.hpp"
 
 int main()
 {
@@ -33,12 +35,15 @@ int main()
         return -1;
     }
 
-    offline_4::student::set_print_delay(w);
-    offline_4::student::set_bind_delay(x);
-    offline_4::student::set_submission_delay(y);
+    offline_4::timer::set_print_delay(w);
+    offline_4::timer::set_bind_delay(x);
+    offline_4::timer::set_submission_delay(y);
 
     std::vector<offline_4::student> students(n);
-    std::vector<offline_4::group> groups(n / m);
+    std::vector<offline_4::group> &groups = offline_4::group::get_groups();
+    std::vector<offline_4::staff> staffs(2);
+
+    groups.resize(n / m);
 
     for(size_t i = 0; i < n; ++i)
     {
@@ -58,14 +63,29 @@ int main()
         }
     }
 
+    for(size_t i = 0; i < 2; ++i)
+    {
+        staffs[i].set_id(i + 1);
+    }
+
     for(size_t i = 0; i < n; ++i)
     {
         students[i].start_action();
     }
 
+    for(size_t i = 0; i < 2; ++i)
+    {
+        staffs[i].start_action();
+    }
+
     for(size_t i = 0; i < n; ++i)
     {
         students[i].join_thread();
+    }
+
+    for(size_t i = 0; i < n; ++i)
+    {
+        staffs[i].join_thread();
     }
 
     return 0;

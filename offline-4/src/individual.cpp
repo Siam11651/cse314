@@ -1,18 +1,11 @@
 #include "individual.hpp"
 
-offline_4::individual::individual(const size_t &id)
+offline_4::individual::individual(const uint64_t &id)
 {
     set_id(id);
 }
 
-void offline_4::individual::sleep(const size_t &seconds)
-{
-    std::chrono::seconds delay_seconds(seconds);
-
-    std::this_thread::sleep_for(delay_seconds);
-}
-
-void offline_4::individual::set_id(const size_t &id)
+void offline_4::individual::set_id(const uint64_t &id)
 {
     this->id = id;
 }
