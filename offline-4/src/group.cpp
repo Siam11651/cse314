@@ -45,11 +45,15 @@ void offline_4::group::insert_student(student *student)
     members.push_back(student);
 }
 
-void offline_4::group::notify()
+void offline_4::group::notify(const uint64_t &from)
 {
+    size_t target_printer_id = from % 4;
+
     for(size_t i = 0; i < members.size(); ++i)
     {
-        if(members[i]->release_print_if_waiting())
+        size_t member_target_printer_id = members[i]->get_id() % 4;
+
+        if(member_target_printer_id == target_printer_id && members[i]->release_print_if_waiting())
         {
             return;
         }
@@ -61,7 +65,9 @@ void offline_4::group::notify()
         {
             for(size_t j = 0; j < groups[i].members.size(); ++j)
             {
-                if(groups[i].members[j]->release_print_if_waiting())
+                size_t member_target_printer_id = groups[i].members[j]->get_id() % 4;
+
+                if(member_target_printer_id == target_printer_id && groups[i].members[j]->release_print_if_waiting())
                 {
                     return;
                 }

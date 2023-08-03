@@ -64,7 +64,7 @@ void offline_4::student::action()
 
     printer_locks[target_printer_id].unlock();
 
-    get_group()->notify();
+    get_group()->notify(get_id());
     get_group()->get_print_done_semaphore()->release();
 
     if(get_group()->get_leader()->get_id() != get_id())

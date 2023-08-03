@@ -27,7 +27,7 @@ namespace offline_4
         student *get_leader() const;
         std::counting_semaphore<1> *get_print_done_semaphore() const;
         void insert_student(student *student);
-        void notify();
+        void notify(const uint64_t &from);
         static std::vector<group> &get_groups();
         ~group();
     };
