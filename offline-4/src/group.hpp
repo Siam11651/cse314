@@ -14,7 +14,7 @@ namespace offline_4
     private:
         size_t id;
         offline_4::student *leader;
-        std::map<uint64_t, offline_4::student *> members;
+        std::vector<student *> members;
         std::counting_semaphore<1> *print_done_semaphore;
         static std::vector<group> groups;
 
@@ -25,10 +25,9 @@ namespace offline_4
         size_t get_id() const;
         size_t get_size() const;
         student *get_leader() const;
-        bool get_is_all_printed();
         std::counting_semaphore<1> *get_print_done_semaphore() const;
         void insert_student(student *student);
-        // void notify();
+        void notify();
         static std::vector<group> &get_groups();
         ~group();
     };

@@ -16,16 +16,13 @@ namespace offline_4
     private:
         offline_4::group *group;
         bool has_printed;
-        // bool print_waiting;
+        bool waiting;
         std::mutex has_printed_lock;
-        // std::mutex print_waiting_lock;
-        // std::binary_semaphore *printer_wait_semaphore;
-        static std::mutex printers_lock;
-        // static std::mutex printer_busy_locks[4];
-        static std::counting_semaphore<1> printer_semaphores[4];
+        std::mutex waiting_lock;
+        std::binary_semaphore *wait_semaphore;
+        static bool printer_busy[4];
+        static std::mutex printer_locks[4];
         static std::counting_semaphore<2> binder_semaphore;
-        static offline_4::printer_state printer_states[4];
-        // static bool printer_busy[4];
 
         static void test_printer(const size_t &index);
         
@@ -34,10 +31,8 @@ namespace offline_4
         void set_group(offline_4::group *group);
         void set_has_printed(const bool &value);
         offline_4::group *get_group() const;
-        bool get_has_printed();
-        // bool get_is_print_waiting();
         void action();
-        void release_print();
+        bool release_print_if_waiting();
         bool operator < (const student &other) const;
         ~student();
     };

@@ -59,6 +59,7 @@ int main()
 
         for(size_t j = leader_id - m; j < leader_id; ++j)
         {
+            groups[i].insert_student(&students[j]);
             students[j].set_group(&groups[i]);
         }
     }
