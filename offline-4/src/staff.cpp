@@ -8,8 +8,7 @@
 
 size_t offline_4::staff::submission_count = 0;
 size_t offline_4::staff::reader_count = 0;
-std::mutex offline_4::staff::reader_count_lock;
-std::mutex offline_4::staff::read_write_lock;
+std::shared_mutex offline_4::staff::read_write_lock;
 
 offline_4::staff::staff(const size_t &id) : individual(id)
 {
@@ -23,19 +22,7 @@ void offline_4::staff::action()
 
     while(true)
     {
-        reader_count_lock.lock();
-
-        ++reader_count;
-
-        if(reader_count == 1)
-        {
-            reader_count_lock.unlock();
-            read_write_lock.lock();
-        }
-        else
-        {
-            reader_count_lock.unlock();
-        }
+        read_write_lock.lock_shared();
 
         std::this_thread::sleep_for(timer::get_submission_delay());
 
@@ -43,19 +30,7 @@ void offline_4::staff::action()
 
         std::osyncstream(output_stream) << "Staff " << get_id() << " has started reading the entry book at time " << timer::get_microseconds_count() / 1000000 << ". No. of submission = " << submission_count << std::endl;
 
-        reader_count_lock.lock();
-
-        --reader_count;
-
-        if(reader_count == 0)
-        {
-            reader_count_lock.unlock();
-            read_write_lock.unlock();
-        }
-        else
-        {
-            reader_count_lock.unlock();
-        }
+        read_write_lock.unlock_shared();
 
         if(temp_submission_count == groups->size())
         {
