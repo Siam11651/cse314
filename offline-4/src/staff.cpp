@@ -1,8 +1,10 @@
-#include <iostream>
+#include <fstream>
 #include <syncstream>
 #include "staff.hpp"
+#include "group.hpp"
 #include "timer.hpp"
 #include "random.hpp"
+#include "stream.hpp"
 
 size_t offline_4::staff::submission_count = 0;
 size_t offline_4::staff::reader_count = 0;
@@ -16,10 +18,11 @@ offline_4::staff::staff(const size_t &id) : individual(id)
 
 void offline_4::staff::action()
 {
+    std::ofstream &output_stream = offline_4::stream::get_output_stream();
+    std::vector<group> *groups = group::get_groups();
+
     while(true)
     {
-        // offline_4::staff::increment_reader_count();
-
         reader_count_lock.lock();
 
         ++reader_count;
@@ -33,7 +36,7 @@ void offline_4::staff::action()
 
         std::this_thread::sleep_for(timer::get_submission_delay());
 
-        std::osyncstream(std::cout) << "Staff " << get_id() << " has started reading the entry book at time " << timer::get_microseconds_count() << ". No. of submission = " << staff::submission_count << std::endl;
+        std::osyncstream(output_stream) << "Staff " << get_id() << " has started reading the entry book at time " << timer::get_microseconds_count() << ". No. of submission = " << staff::submission_count << std::endl;
 
         reader_count_lock.lock();
 
@@ -45,6 +48,11 @@ void offline_4::staff::action()
         }
 
         reader_count_lock.unlock();
+
+        if(submission_count == groups->size())
+        {
+            break;
+        }
 
         uint64_t random_delay = random::get_poisson_distribution() % total_wxy + total_wxy;
         std::chrono::seconds delay_seconds(random_delay);

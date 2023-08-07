@@ -1,7 +1,7 @@
 #include "group.hpp"
 #include "student.hpp"
 
-std::vector<offline_4::group> offline_4::group::groups;
+std::vector<offline_4::group> *offline_4::group::groups;
 
 offline_4::group::group(const size_t &id)
 {
@@ -59,15 +59,15 @@ void offline_4::group::notify(const uint64_t &from)
         }
     }
 
-    for(size_t i = 0; i < groups.size(); ++i)
+    for(size_t i = 0; i < groups->size(); ++i)
     {
-        if(&groups[i] != this)
+        if(&(*groups)[i] != this)
         {
-            for(size_t j = 0; j < groups[i].members.size(); ++j)
+            for(size_t j = 0; j < (*groups)[i].members.size(); ++j)
             {
-                size_t member_target_printer_id = groups[i].members[j]->get_id() % 4;
+                size_t member_target_printer_id = (*groups)[i].members[j]->get_id() % 4;
 
-                if(member_target_printer_id == target_printer_id && groups[i].members[j]->release_print_if_waiting())
+                if(member_target_printer_id == target_printer_id && (*groups)[i].members[j]->release_print_if_waiting())
                 {
                     return;
                 }
@@ -76,7 +76,12 @@ void offline_4::group::notify(const uint64_t &from)
     }
 }
 
-std::vector<offline_4::group> &offline_4::group::get_groups()
+void offline_4::group::set_groups(std::vector<group> *groups)
+{
+    group::groups = groups;
+}
+
+std::vector<offline_4::group> *offline_4::group::get_groups()
 {
     return groups;
 }

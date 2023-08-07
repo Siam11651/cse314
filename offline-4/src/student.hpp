@@ -20,6 +20,7 @@ namespace offline_4
         std::mutex has_printed_lock;
         std::mutex waiting_lock;
         std::binary_semaphore *wait_semaphore;
+        static std::vector<student> *students;
         static bool printer_busy[4];
         static std::mutex printer_locks[4];
         static std::counting_semaphore<2> binder_semaphore;
@@ -34,6 +35,8 @@ namespace offline_4
         void action();
         bool release_print_if_waiting();
         bool operator < (const student &other) const;
+        static void set_students(std::vector<student> *students);
+        static std::vector<student> *get_students();
         ~student();
     };
 }

@@ -11,4 +11,5 @@ add_executable(offline-4
     "src/individual.cpp"
     "src/timer.cpp"
     "src/random.cpp"
+    "src/stream.cpp"
 )
