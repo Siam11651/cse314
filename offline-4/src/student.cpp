@@ -31,7 +31,7 @@ offline_4::group *offline_4::student::get_group() const
 void offline_4::student::action()
 {
     std::ofstream &output_stream = offline_4::stream::get_output_stream();   
-    uint64_t random_delay = random::get_poisson_distribution() % 4 + 1;
+    uint64_t random_delay = random::get_next_uint64_t() % 4 + 1;
 
     std::chrono::seconds delay_seconds(random_delay);
 
@@ -57,11 +57,11 @@ void offline_4::student::action()
         printer_locks[target_printer_id].unlock();
     }
 
-    std::osyncstream(output_stream) << "Student " << get_id() << " has arrived at the print station at time " << timer::get_microseconds_count() << std::endl;
+    std::osyncstream(output_stream) << "Student " << get_id() << " has arrived at the print station at time " << timer::get_microseconds_count() / 1000000 << std::endl;
 
     std::this_thread::sleep_for(timer::get_print_delay());
 
-    std::osyncstream(output_stream) << "Student " << get_id() << " has finished printing at time " << timer::get_microseconds_count() << std::endl;
+    std::osyncstream(output_stream) << "Student " << get_id() << " has finished printing at time " << timer::get_microseconds_count() / 1000000 << std::endl;
 
     printer_locks[target_printer_id].lock();
 
@@ -86,20 +86,20 @@ void offline_4::student::action()
         get_group()->get_print_done_semaphore()->acquire();
     }
 
-    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has finished printing at time " << timer::get_microseconds_count() << std::endl;
+    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has finished printing at time " << timer::get_microseconds_count() / 1000000 << std::endl;
 
     student::binder_semaphore.acquire();
 
-    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has started binding at time " << timer::get_microseconds_count() << std::endl;
+    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has started binding at time " << timer::get_microseconds_count() / 1000000 << std::endl;
 
     std::this_thread::sleep_for(timer::get_bind_delay());
     student::binder_semaphore.release();
 
-    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has finished binding at time " << timer::get_microseconds_count() << std::endl;
+    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has finished binding at time " << timer::get_microseconds_count() / 1000000 << std::endl;
 
     staff::add_submission();
 
-    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has submitted the report at time " << timer::get_microseconds_count() << std::endl;
+    std::osyncstream(output_stream) << "Group " << get_group()->get_id() << " has submitted the report at time " << timer::get_microseconds_count() / 1000000 << std::endl;
 }
 
 bool offline_4::student::release_print_if_waiting()

@@ -2,9 +2,9 @@
 
 std::mutex offline_4::random::rng_lock;
 std::mt19937_64 offline_4::random::mt(39);
-std::poisson_distribution<uint64_t> offline_4::random::poisson_distribution(2.5);
+std::poisson_distribution<uint64_t> offline_4::random::poisson_distribution;
 
-uint64_t offline_4::random::get_poisson_distribution()
+uint64_t offline_4::random::get_next_uint64_t()
 {
     rng_lock.lock();
 

@@ -13,7 +13,7 @@ std::mutex offline_4::staff::read_write_lock;
 
 offline_4::staff::staff(const size_t &id) : individual(id)
 {
-    total_wxy = timer::get_print_delay().count() + timer::get_bind_delay().count() + timer::get_submission_delay().count();
+    
 }
 
 void offline_4::staff::action()
@@ -29,14 +29,19 @@ void offline_4::staff::action()
 
         if(reader_count == 1)
         {
+            reader_count_lock.unlock();
             read_write_lock.lock();
         }
-
-        reader_count_lock.unlock();
+        else
+        {
+            reader_count_lock.unlock();
+        }
 
         std::this_thread::sleep_for(timer::get_submission_delay());
 
-        std::osyncstream(output_stream) << "Staff " << get_id() << " has started reading the entry book at time " << timer::get_microseconds_count() << ". No. of submission = " << staff::submission_count << std::endl;
+        uint64_t temp_submission_count = submission_count;
+
+        std::osyncstream(output_stream) << "Staff " << get_id() << " has started reading the entry book at time " << timer::get_microseconds_count() / 1000000 << ". No. of submission = " << submission_count << std::endl;
 
         reader_count_lock.lock();
 
@@ -44,17 +49,20 @@ void offline_4::staff::action()
 
         if(reader_count == 0)
         {
+            reader_count_lock.unlock();
             read_write_lock.unlock();
         }
+        else
+        {
+            reader_count_lock.unlock();
+        }
 
-        reader_count_lock.unlock();
-
-        if(submission_count == groups->size())
+        if(temp_submission_count == groups->size())
         {
             break;
         }
 
-        uint64_t random_delay = random::get_poisson_distribution() % total_wxy + total_wxy;
+        uint64_t random_delay = random::get_next_uint64_t() % 5 + 1;
         std::chrono::seconds delay_seconds(random_delay);
 
         std::this_thread::sleep_for(delay_seconds);
@@ -65,8 +73,9 @@ void offline_4::staff::add_submission()
 {
     read_write_lock.lock();
 
-    ++submission_count;
     std::this_thread::sleep_for(timer::get_submission_delay());
+
+    ++submission_count;
 
     read_write_lock.unlock();
 }

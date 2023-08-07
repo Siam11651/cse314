@@ -13,6 +13,6 @@ namespace offline_4
         static std::poisson_distribution<uint64_t> poisson_distribution;
 
     public:
-        static uint64_t get_poisson_distribution();
+        static uint64_t get_next_uint64_t();
     };
 }
