@@ -7,12 +7,14 @@
 #include "stream.hpp"
 
 std::vector<offline_4::student> *offline_4::student::students;
-bool offline_4::student::printer_busy[4];
+bool offline_4::student::printer_busy[4] = {false, false, false, false};
 std::mutex offline_4::student::printer_locks[4];
 std::counting_semaphore<2> offline_4::student::binder_semaphore(2);
 
 offline_4::student::student(const uint64_t &id) : individual(id)
 {
+    has_printed = false;
+    waiting = false;
     wait_semaphore = new std::binary_semaphore(0);
 }
 

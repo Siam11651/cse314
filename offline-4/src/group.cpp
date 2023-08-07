@@ -1,7 +1,7 @@
 #include "group.hpp"
 #include "student.hpp"
 
-std::vector<offline_4::group> *offline_4::group::groups;
+std::vector<offline_4::group> *offline_4::group::groups = nullptr;
 
 offline_4::group::group(const size_t &id)
 {
@@ -13,6 +13,7 @@ offline_4::group::group(const size_t &id)
 void offline_4::group::set_id(const size_t &id)
 {
     this->id = id;
+    leader = nullptr;
 }
 
 void offline_4::group::set_leader(offline_4::student *leader)
