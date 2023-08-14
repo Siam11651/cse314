@@ -1,0 +1,426 @@
+diff --git a/.gitignore b/.gitignore
+index 07216f3..49d7d79 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -15,3 +15,4 @@ mkfs
+ kernel/kernel
+ user/usys.S
+ .gdbinit
++.vscode/
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 39a99d7..a87d873 100644
+--- a/Makefile
++++ b/Makefile
+@@ -56,7 +56,7 @@ LD = $(TOOLPREFIX)ld
+ OBJCOPY = $(TOOLPREFIX)objcopy
+ OBJDUMP = $(TOOLPREFIX)objdump
+ 
+-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
++CFLAGS = -Wall -Werror -fno-omit-frame-pointer -ggdb -gdwarf-2
+ CFLAGS += -MD
+ CFLAGS += -mcmodel=medany
+ CFLAGS += -ffreestanding -fno-common -nostdlib -mno-relax
+@@ -132,6 +132,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_test\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+@@ -153,7 +154,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+ 	then echo "-gdb tcp::$(GDBPORT)"; \
+ 	else echo "-s -p $(GDBPORT)"; fi)
+ ifndef CPUS
+-CPUS := 3
++CPUS := 1
+ endif
+ 
+ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..e81aaba 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -106,6 +106,9 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++int             thread_create(void (*fcn)(void *), void *arg, void *stack);
++int             thread_join(int thread_id);
++int             thread_exit(void);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+diff --git a/kernel/memlayout.h b/kernel/memlayout.h
+index 776f98c..f812516 100644
+--- a/kernel/memlayout.h
++++ b/kernel/memlayout.h
+@@ -55,6 +55,9 @@
+ // each surrounded by invalid guard pages.
+ #define KSTACK(p) (TRAMPOLINE - ((p)+1)* 2*PGSIZE)
+ 
++// threads per process
++#define NTHREAD 8
++
+ // User memory layout.
+ // Address zero first:
+ //   text
+@@ -64,4 +67,4 @@
+ //   ...
+ //   TRAPFRAME (p->trapframe, used by the trampoline)
+ //   TRAMPOLINE (the same page as in the kernel)
+-#define TRAPFRAME (TRAMPOLINE - PGSIZE)
++#define TRAPFRAME (TRAMPOLINE - PGSIZE * NTHREAD)
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 959b778..ec59eee 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -10,6 +10,8 @@ struct cpu cpus[NCPU];
+ 
+ struct proc proc[NPROC];
+ 
++uint8 thread[NPROC][NTHREAD];
++
+ struct proc *initproc;
+ 
+ int nextpid = 1;
+@@ -193,6 +195,13 @@ proc_pagetable(struct proc *p)
+     return 0;
+   }
+ 
++  for(uint64 i = 0; i < NPROC; ++i){
++    if(thread[i][0] == 0){
++      p->mem_id = i;
++      break;
++    }
++  }
++
+   // map the trapframe page just below the trampoline page, for
+   // trampoline.S.
+   if(mappages(pagetable, TRAPFRAME, PGSIZE,
+@@ -210,6 +219,7 @@ proc_pagetable(struct proc *p)
+ void
+ proc_freepagetable(pagetable_t pagetable, uint64 sz)
+ {
++  printf("called\n");
+   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+   uvmfree(pagetable, sz);
+@@ -681,3 +691,126 @@ procdump(void)
+     printf("\n");
+   }
+ }
++
++struct proc *
++allocthread(struct proc *parent)
++{
++  struct proc *p;
++
++  for(p = proc; p < &proc[NPROC]; p++) {
++    acquire(&p->lock);
++    if(p->state == UNUSED) {
++      goto found;
++    } else {
++      release(&p->lock);
++    }
++  }
++  return 0;
++
++found:
++  p->pid = allocpid();
++  p->state = USED;
++
++  // Allocate a trapframe page.
++  if((p->trapframe = (struct trapframe *)kalloc()) == 0){
++    freeproc(p);
++    release(&p->lock);
++    return 0;
++  }
++
++  p->pagetable = parent->pagetable;
++  p->mem_id = parent->mem_id;
++
++  for(uint64 i = 1; i < NTHREAD; ++i){  // index 0 used by parent process
++    if(thread[p->mem_id][i] == 0){
++      p->is_thread = i;
++    }
++  }
++
++  // map the trapframe page just below the trampoline page, for
++  // trampoline.S.
++  if(mappages(p->pagetable, TRAPFRAME + p->is_thread * PGSIZE, PGSIZE,
++              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
++    return 0;
++  }
++
++  // An empty user page table.
++  // p->pagetable = proc_pagetable(p);
++  // if(p->pagetable == 0){
++  //   freeproc(p);
++  //   release(&p->lock);
++  //   return 0;
++  // }
++
++  // Set up new context to start executing at forkret,
++  // which returns to user space.
++  memset(&p->context, 0, sizeof(p->context));
++  p->context.ra = (uint64)forkret;
++  p->context.sp = p->kstack + PGSIZE;
++
++  return p;
++}
++
++int
++thread_create(void (*fcn)(void *), void *arg, void *stack)
++{
++  int i, pid;
++  struct proc *np;
++  struct proc *p = myproc();
++
++  // Allocate process.
++  if((np = allocthread(p)) == 0){
++    return -1;
++  }
++
++  // Copy user memory from parent to child.
++  // if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
++  //   freeproc(np);
++  //   release(&np->lock);
++  //   return -1;
++  // }
++  np->sz = p->sz;
++  np->pagetable = p->pagetable;
++
++  // copy saved user registers.
++  // *(np->trapframe) = *(p->trapframe);
++
++  // Cause fork to return 0 in the child.
++  np->trapframe->a0 = 0;
++  np->trapframe->epc = (uint64)fcn;
++  np->trapframe->sp = (uint64)stack;
++
++  // increment reference counts on open file descriptors.
++  for(i = 0; i < NOFILE; i++)
++    if(p->ofile[i])
++      np->ofile[i] = filedup(p->ofile[i]);
++  np->cwd = idup(p->cwd);
++
++  safestrcpy(np->name, p->name, sizeof(p->name));
++
++  pid = np->pid;
++
++  release(&np->lock);
++
++  acquire(&wait_lock);
++  np->parent = p;
++  release(&wait_lock);
++
++  acquire(&np->lock);
++  np->state = RUNNABLE;
++  release(&np->lock);
++
++  return pid;
++}
++
++int
++thread_join(int thread_id)
++{
++  return 0;
++}
++
++int
++thread_exit()
++{
++  return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..5e2acea 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,7 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  struct spinlock memlock;     // find places to set and release the locks 
++  uint64 is_thread;             // if it is thread
++  uint64 mem_id;               // All threads will have the same physical pages with the mother, hence the same memory ID
+ };
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..f576bdb 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,9 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_thread_create(void);
++extern uint64 sys_thread_join(void);
++extern uint64 sys_thread_exit(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +129,9 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_thread_create] sys_thread_create,
++[SYS_thread_join]   sys_thread_join,
++[SYS_thread_exit]   sys_thread_exit,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..eb6f3b1 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,6 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_thread_create   22
++#define SYS_thread_join     23
++#define SYS_thread_exit     24
+\ No newline at end of file
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 1de184e..548a95c 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -89,3 +89,31 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++uint64
++sys_thread_create(void)
++{
++  uint64 routine_address;
++  uint64 argument_address;
++  uint64 stack_address;
++
++  argaddr(0, &routine_address);
++  argaddr(1, &argument_address);
++  argaddr(2, &stack_address);
++  
++  int return_value = thread_create((void (*)(void *))routine_address, (void *)argument_address, (void *)stack_address);
++
++  return return_value;
++}
++
++uint64
++sys_thread_join(void)
++{
++  return 0;
++}
++
++uint64
++sys_thread_exit(void)
++{
++  return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/trampoline.S b/kernel/trampoline.S
+index d7308cc..122156c 100644
+--- a/kernel/trampoline.S
++++ b/kernel/trampoline.S
+@@ -106,10 +106,10 @@ userret:
+ 
+         # switch to the user page table.
+         sfence.vma zero, zero
+-        csrw satp, a0
++        csrw satp, a1
+         sfence.vma zero, zero
+ 
+-        li a0, TRAPFRAME
++        # li a0, TRAPFRAME
+ 
+         # restore all but a0 from TRAPFRAME
+         ld ra, 40(a0)
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..e8b4577 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -121,12 +121,13 @@ usertrapret(void)
+ 
+   // tell trampoline.S the user page table to switch to.
+   uint64 satp = MAKE_SATP(p->pagetable);
++  uint64 trapframe_address = TRAPFRAME;
+ 
+   // jump to userret in trampoline.S at the top of memory, which 
+   // switches to the user page table, restores user registers,
+   // and switches to user mode with sret.
+   uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
+-  ((void (*)(uint64))trampoline_userret)(satp);
++  ((void (*)(uint64, uint64))trampoline_userret)(trapframe_address, satp);
+ }
+ 
+ // interrupts and exceptions from kernel code go here via kernelvec,
+diff --git a/user/test.c b/user/test.c
+new file mode 100644
+index 0000000..73c2f82
+--- /dev/null
++++ b/user/test.c
+@@ -0,0 +1,36 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++void foo(void *arg)
++{
++    for(; ; )
++    {
++        printf("b\n");
++    }
++}
++
++int main()
++{
++    void *stack = malloc(4096);
++
++    // thread_create(foo, 0, &stack);
++
++    if(thread_create(foo, 0, &stack) == 0)
++    {
++        foo(0);
++    }
++    else
++    {
++        int a = 1;
++
++        for(; ; )
++        {
++            printf("%d\n", a);
++
++            ++a;
++        }
++    }
++
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..7a4bd19 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,9 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int thread_create(void (*)(void *), void *, void *);
++int thread_join(int);
++int thread_exit(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..a334aa7 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,6 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("thread_create");
++entry("thread_join");
++entry("thread_exit");
