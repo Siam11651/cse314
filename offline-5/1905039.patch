@@ -29,7 +29,7 @@ index 39a99d7..a87d873 100644
  
  QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 diff --git a/kernel/defs.h b/kernel/defs.h
-index a3c962b..6065887 100644
+index a3c962b..11b4c70 100644
 --- a/kernel/defs.h
 +++ b/kernel/defs.h
 @@ -106,6 +106,7 @@ void            yield(void);
@@ -40,8 +40,16 @@ index a3c962b..6065887 100644
  
  // swtch.S
  void            swtch(struct context*, struct context*);
+@@ -165,6 +166,7 @@ void            uvmfirst(pagetable_t, uchar *, uint);
+ uint64          uvmalloc(pagetable_t, uint64, uint64, int);
+ uint64          uvmdealloc(pagetable_t, uint64, uint64);
+ int             uvmcopy(pagetable_t, pagetable_t, uint64);
++void             uvmmirror(pagetable_t, pagetable_t, uint64);
+ void            uvmfree(pagetable_t, uint64);
+ void            uvmunmap(pagetable_t, uint64, uint64, int);
+ void            uvmclear(pagetable_t, uint64);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..779f95b 100644
+index 959b778..5160a21 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -15,6 +15,9 @@ struct proc *initproc;
@@ -91,7 +99,7 @@ index 959b778..779f95b 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -681,3 +700,61 @@ procdump(void)
+@@ -681,3 +700,58 @@ procdump(void)
      printf("\n");
    }
  }
@@ -109,12 +117,9 @@ index 959b778..779f95b 100644
 +
 +  np->memid = p->memid;
 +
-+  // Copy user memory from parent to child.
-+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
-+    freeproc(np);
-+    release(&np->lock);
-+    return -1;
-+  }
++  // Mirror user memory from parent to child.
++  uvmmirror(p->pagetable, np->pagetable, p->sz);
++
 +  np->sz = p->sz;
 +
 +  // copy saved user registers.
@@ -216,15 +221,43 @@ index 1de184e..a49c656 100644
 +  return clone((void (*)(void *))start_routine_address, (void *)argument_address, (void *)stack_address);
 +}
 \ No newline at end of file
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 9f69783..47f6730 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -332,6 +332,21 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+   return -1;
+ }
+ 
++void
++uvmmirror(pagetable_t old, pagetable_t new, uint64 sz)
++{
++  pte_t *opte;
++  pte_t *npte;
++
++  for(uint64 i = 0; i < sz; i += PGSIZE){
++    if((opte = walk(old, i, 0)) == 0)
++      panic("uvmmirror: old pte should exist");
++    if((npte = walk(new, i, 1)) == 0)
++      panic("uvmmirror: new pte should exist");
++    *npte = *opte;
++  }
++}
++
+ // mark a PTE invalid for user access.
+ // used by exec for the user stack guard page.
+ void
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
-index 0000000..144428e
+index 0000000..8478cad
 --- /dev/null
 +++ b/user/test.c
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,59 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
++
++uint64 glob = 69;
 +
 +void foo(void *arg)
 +{
@@ -232,9 +265,21 @@ index 0000000..144428e
 +
 +    for(; ; )
 +    {
-+        printf("b %d\n", a);
++        printf("b %d %d\n", a, glob);
 +
 +        ++a;
++
++        if(a % 100 == 0)
++        {
++            if(glob == 69)
++            {
++                glob = 420;
++            }
++            else
++            {
++                glob = 69;
++            }
++        }
 +    }
 +}
 +
@@ -248,9 +293,21 @@ index 0000000..144428e
 +
 +    for(; ; )
 +    {
-+        printf("a %d\n", a);
++        printf("a %d %d\n", a, glob);
 +
 +        ++a;
++
++        if(a % 100 == 0)
++        {
++            if(glob == 69)
++            {
++                glob = 420;
++            }
++            else
++            {
++                glob = 69;
++            }
++        }
 +    }
 +
 +    return 0;
