@@ -1,13 +1,3 @@
-diff --git a/.gitignore b/.gitignore
-index 07216f3..49d7d79 100644
---- a/.gitignore
-+++ b/.gitignore
-@@ -15,3 +15,4 @@ mkfs
- kernel/kernel
- user/usys.S
- .gdbinit
-+.vscode/
-\ No newline at end of file
 diff --git a/Makefile b/Makefile
 index 39a99d7..a87d873 100644
 --- a/Makefile
@@ -39,166 +29,107 @@ index 39a99d7..a87d873 100644
  
  QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 diff --git a/kernel/defs.h b/kernel/defs.h
-index a3c962b..e81aaba 100644
+index a3c962b..6065887 100644
 --- a/kernel/defs.h
 +++ b/kernel/defs.h
-@@ -106,6 +106,9 @@ void            yield(void);
+@@ -106,6 +106,7 @@ void            yield(void);
  int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
  int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
  void            procdump(void);
-+int             thread_create(void (*fcn)(void *), void *arg, void *stack);
-+int             thread_join(int thread_id);
-+int             thread_exit(void);
++int             clone(void (*)(void *), void *, void *);
  
  // swtch.S
  void            swtch(struct context*, struct context*);
-diff --git a/kernel/memlayout.h b/kernel/memlayout.h
-index 776f98c..f812516 100644
---- a/kernel/memlayout.h
-+++ b/kernel/memlayout.h
-@@ -55,6 +55,9 @@
- // each surrounded by invalid guard pages.
- #define KSTACK(p) (TRAMPOLINE - ((p)+1)* 2*PGSIZE)
- 
-+// threads per process
-+#define NTHREAD 8
-+
- // User memory layout.
- // Address zero first:
- //   text
-@@ -64,4 +67,4 @@
- //   ...
- //   TRAPFRAME (p->trapframe, used by the trampoline)
- //   TRAMPOLINE (the same page as in the kernel)
--#define TRAPFRAME (TRAMPOLINE - PGSIZE)
-+#define TRAPFRAME (TRAMPOLINE - PGSIZE * NTHREAD)
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..ec59eee 100644
+index 959b778..779f95b 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
-@@ -10,6 +10,8 @@ struct cpu cpus[NCPU];
- 
- struct proc proc[NPROC];
- 
-+uint8 thread[NPROC][NTHREAD];
-+
- struct proc *initproc;
- 
+@@ -15,6 +15,9 @@ struct proc *initproc;
  int nextpid = 1;
-@@ -193,6 +195,13 @@ proc_pagetable(struct proc *p)
-     return 0;
+ struct spinlock pid_lock;
+ 
++int nextmemid = 1;
++struct spinlock memid_lock;
++
+ extern void forkret(void);
+ static void freeproc(struct proc *p);
+ 
+@@ -50,6 +53,7 @@ procinit(void)
+   struct proc *p;
+   
+   initlock(&pid_lock, "nextpid");
++  initlock(&memid_lock, "nextmemid");
+   initlock(&wait_lock, "wait_lock");
+   for(p = proc; p < &proc[NPROC]; p++) {
+       initlock(&p->lock, "proc");
+@@ -102,6 +106,19 @@ allocpid()
+   return pid;
+ }
+ 
++int
++allocmemid()
++{
++  int memid;
++  
++  acquire(&memid_lock);
++  memid = nextmemid;
++  nextmemid = nextmemid + 1;
++  release(&memid_lock);
++
++  return memid;
++}
++
+ // Look in the process table for an UNUSED proc.
+ // If found, initialize state required to run in the kernel,
+ // and return with p->lock held.
+@@ -288,6 +305,8 @@ fork(void)
+     return -1;
    }
  
-+  for(uint64 i = 0; i < NPROC; ++i){
-+    if(thread[i][0] == 0){
-+      p->mem_id = i;
-+      break;
-+    }
-+  }
++  np->memid = allocmemid();
 +
-   // map the trapframe page just below the trampoline page, for
-   // trampoline.S.
-   if(mappages(pagetable, TRAPFRAME, PGSIZE,
-@@ -210,6 +219,7 @@ proc_pagetable(struct proc *p)
- void
- proc_freepagetable(pagetable_t pagetable, uint64 sz)
- {
-+  printf("called\n");
-   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-   uvmunmap(pagetable, TRAPFRAME, 1, 0);
-   uvmfree(pagetable, sz);
-@@ -681,3 +691,126 @@ procdump(void)
+   // Copy user memory from parent to child.
+   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+     freeproc(np);
+@@ -681,3 +700,61 @@ procdump(void)
      printf("\n");
    }
  }
 +
-+struct proc *
-+allocthread(struct proc *parent)
-+{
-+  struct proc *p;
-+
-+  for(p = proc; p < &proc[NPROC]; p++) {
-+    acquire(&p->lock);
-+    if(p->state == UNUSED) {
-+      goto found;
-+    } else {
-+      release(&p->lock);
-+    }
-+  }
-+  return 0;
-+
-+found:
-+  p->pid = allocpid();
-+  p->state = USED;
-+
-+  // Allocate a trapframe page.
-+  if((p->trapframe = (struct trapframe *)kalloc()) == 0){
-+    freeproc(p);
-+    release(&p->lock);
-+    return 0;
-+  }
-+
-+  p->pagetable = parent->pagetable;
-+  p->mem_id = parent->mem_id;
-+
-+  for(uint64 i = 1; i < NTHREAD; ++i){  // index 0 used by parent process
-+    if(thread[p->mem_id][i] == 0){
-+      p->is_thread = i;
-+    }
-+  }
-+
-+  // map the trapframe page just below the trampoline page, for
-+  // trampoline.S.
-+  if(mappages(p->pagetable, TRAPFRAME + p->is_thread * PGSIZE, PGSIZE,
-+              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
-+    return 0;
-+  }
-+
-+  // An empty user page table.
-+  // p->pagetable = proc_pagetable(p);
-+  // if(p->pagetable == 0){
-+  //   freeproc(p);
-+  //   release(&p->lock);
-+  //   return 0;
-+  // }
-+
-+  // Set up new context to start executing at forkret,
-+  // which returns to user space.
-+  memset(&p->context, 0, sizeof(p->context));
-+  p->context.ra = (uint64)forkret;
-+  p->context.sp = p->kstack + PGSIZE;
-+
-+  return p;
-+}
-+
-+int
-+thread_create(void (*fcn)(void *), void *arg, void *stack)
++int clone(void (* fcn)(void *), void *arg, void *stack)
 +{
 +  int i, pid;
 +  struct proc *np;
 +  struct proc *p = myproc();
 +
 +  // Allocate process.
-+  if((np = allocthread(p)) == 0){
++  if((np = allocproc()) == 0){
 +    return -1;
 +  }
 +
++  np->memid = p->memid;
++
 +  // Copy user memory from parent to child.
-+  // if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
-+  //   freeproc(np);
-+  //   release(&np->lock);
-+  //   return -1;
-+  // }
++  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
++    freeproc(np);
++    release(&np->lock);
++    return -1;
++  }
 +  np->sz = p->sz;
-+  np->pagetable = p->pagetable;
 +
 +  // copy saved user registers.
-+  // *(np->trapframe) = *(p->trapframe);
++  *(np->trapframe) = *(p->trapframe);
 +
-+  // Cause fork to return 0 in the child.
 +  np->trapframe->a0 = 0;
++
++  // Set argument
++  np->trapframe->a0 = (uint64)arg;
++
++  // // Set stack pointer
++  np->trapframe->sp = (uint64)stack + PGSIZE - 3 * sizeof(void*);
++
++  // // Set thread routine
 +  np->trapframe->epc = (uint64)fcn;
-+  np->trapframe->sp = (uint64)stack;
 +
 +  // increment reference counts on open file descriptors.
 +  for(i = 0; i < NOFILE; i++)
@@ -222,155 +153,88 @@ index 959b778..ec59eee 100644
 +
 +  return pid;
 +}
-+
-+int
-+thread_join(int thread_id)
-+{
-+  return 0;
-+}
-+
-+int
-+thread_exit()
-+{
-+  return 0;
-+}
-\ No newline at end of file
 diff --git a/kernel/proc.h b/kernel/proc.h
-index d021857..5e2acea 100644
+index d021857..2e057be 100644
 --- a/kernel/proc.h
 +++ b/kernel/proc.h
-@@ -104,4 +104,7 @@ struct proc {
+@@ -104,4 +104,5 @@ struct proc {
    struct file *ofile[NOFILE];  // Open files
    struct inode *cwd;           // Current directory
    char name[16];               // Process name (debugging)
-+  struct spinlock memlock;     // find places to set and release the locks 
-+  uint64 is_thread;             // if it is thread
-+  uint64 mem_id;               // All threads will have the same physical pages with the mother, hence the same memory ID
++  uint64 memid;                // Process memory id
  };
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index ed65409..f576bdb 100644
+index ed65409..9073e78 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
-@@ -101,6 +101,9 @@ extern uint64 sys_unlink(void);
+@@ -101,6 +101,7 @@ extern uint64 sys_unlink(void);
  extern uint64 sys_link(void);
  extern uint64 sys_mkdir(void);
  extern uint64 sys_close(void);
-+extern uint64 sys_thread_create(void);
-+extern uint64 sys_thread_join(void);
-+extern uint64 sys_thread_exit(void);
++extern uint64 sys_clone(void);
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -126,6 +129,9 @@ static uint64 (*syscalls[])(void) = {
+@@ -126,6 +127,7 @@ static uint64 (*syscalls[])(void) = {
  [SYS_link]    sys_link,
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
-+[SYS_thread_create] sys_thread_create,
-+[SYS_thread_join]   sys_thread_join,
-+[SYS_thread_exit]   sys_thread_exit,
++[SYS_clone]   sys_clone,
  };
  
  void
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index bc5f356..eb6f3b1 100644
+index bc5f356..f9ca940 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -20,3 +20,6 @@
+@@ -20,3 +20,4 @@
  #define SYS_link   19
  #define SYS_mkdir  20
  #define SYS_close  21
-+#define SYS_thread_create   22
-+#define SYS_thread_join     23
-+#define SYS_thread_exit     24
++#define SYS_clone  22
 \ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 1de184e..548a95c 100644
+index 1de184e..a49c656 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
-@@ -89,3 +89,31 @@ sys_uptime(void)
+@@ -89,3 +89,17 @@ sys_uptime(void)
    release(&tickslock);
    return xticks;
  }
 +
 +uint64
-+sys_thread_create(void)
++sys_clone(void)
 +{
-+  uint64 routine_address;
++  uint64 start_routine_address;
 +  uint64 argument_address;
 +  uint64 stack_address;
 +
-+  argaddr(0, &routine_address);
++  argaddr(0, &start_routine_address);
 +  argaddr(1, &argument_address);
 +  argaddr(2, &stack_address);
-+  
-+  int return_value = thread_create((void (*)(void *))routine_address, (void *)argument_address, (void *)stack_address);
 +
-+  return return_value;
-+}
-+
-+uint64
-+sys_thread_join(void)
-+{
-+  return 0;
-+}
-+
-+uint64
-+sys_thread_exit(void)
-+{
-+  return 0;
++  return clone((void (*)(void *))start_routine_address, (void *)argument_address, (void *)stack_address);
 +}
 \ No newline at end of file
-diff --git a/kernel/trampoline.S b/kernel/trampoline.S
-index d7308cc..122156c 100644
---- a/kernel/trampoline.S
-+++ b/kernel/trampoline.S
-@@ -106,10 +106,10 @@ userret:
- 
-         # switch to the user page table.
-         sfence.vma zero, zero
--        csrw satp, a0
-+        csrw satp, a1
-         sfence.vma zero, zero
- 
--        li a0, TRAPFRAME
-+        # li a0, TRAPFRAME
- 
-         # restore all but a0 from TRAPFRAME
-         ld ra, 40(a0)
-diff --git a/kernel/trap.c b/kernel/trap.c
-index 512c850..e8b4577 100644
---- a/kernel/trap.c
-+++ b/kernel/trap.c
-@@ -121,12 +121,13 @@ usertrapret(void)
- 
-   // tell trampoline.S the user page table to switch to.
-   uint64 satp = MAKE_SATP(p->pagetable);
-+  uint64 trapframe_address = TRAPFRAME;
- 
-   // jump to userret in trampoline.S at the top of memory, which 
-   // switches to the user page table, restores user registers,
-   // and switches to user mode with sret.
-   uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
--  ((void (*)(uint64))trampoline_userret)(satp);
-+  ((void (*)(uint64, uint64))trampoline_userret)(trapframe_address, satp);
- }
- 
- // interrupts and exceptions from kernel code go here via kernelvec,
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
-index 0000000..73c2f82
+index 0000000..144428e
 --- /dev/null
 +++ b/user/test.c
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,33 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
 +
 +void foo(void *arg)
 +{
++    int a = 1;
++
 +    for(; ; )
 +    {
-+        printf("b\n");
++        printf("b %d\n", a);
++
++        ++a;
 +    }
 +}
 +
@@ -378,49 +242,59 @@ index 0000000..73c2f82
 +{
 +    void *stack = malloc(4096);
 +
-+    // thread_create(foo, 0, &stack);
++    thread_create(foo, 0, stack);
 +
-+    if(thread_create(foo, 0, &stack) == 0)
++    int a = 1;
++
++    for(; ; )
 +    {
-+        foo(0);
-+    }
-+    else
-+    {
-+        int a = 1;
++        printf("a %d\n", a);
 +
-+        for(; ; )
-+        {
-+            printf("%d\n", a);
-+
-+            ++a;
-+        }
++        ++a;
 +    }
 +
-+    exit(0);
++    return 0;
++}
+\ No newline at end of file
+diff --git a/user/ulib.c b/user/ulib.c
+index c7b66c4..c91cb3f 100644
+--- a/user/ulib.c
++++ b/user/ulib.c
+@@ -145,3 +145,8 @@ memcpy(void *dst, const void *src, uint n)
+ {
+   return memmove(dst, src, n);
+ }
++
++int thread_create(void (* start_routine)(void *), void *arg, void *stack)
++{
++  return clone(start_routine, arg, stack);
 +}
 \ No newline at end of file
 diff --git a/user/user.h b/user/user.h
-index 4d398d5..7a4bd19 100644
+index 4d398d5..71a518c 100644
 --- a/user/user.h
 +++ b/user/user.h
-@@ -22,6 +22,9 @@ int getpid(void);
+@@ -22,6 +22,7 @@ int getpid(void);
  char* sbrk(int);
  int sleep(int);
  int uptime(void);
-+int thread_create(void (*)(void *), void *, void *);
-+int thread_join(int);
-+int thread_exit(void);
++int clone(void (*)(void *), void *, void *);
  
  // ulib.c
  int stat(const char*, struct stat*);
+@@ -39,3 +40,4 @@ void free(void*);
+ int atoi(const char*);
+ int memcmp(const void *, const void *, uint);
+ void *memcpy(void *, const void *, uint);
++int thread_create(void (*)(void *), void *, void *);
+\ No newline at end of file
 diff --git a/user/usys.pl b/user/usys.pl
-index 01e426e..a334aa7 100755
+index 01e426e..f398d4e 100755
 --- a/user/usys.pl
 +++ b/user/usys.pl
-@@ -36,3 +36,6 @@ entry("getpid");
+@@ -36,3 +36,4 @@ entry("getpid");
  entry("sbrk");
  entry("sleep");
  entry("uptime");
-+entry("thread_create");
-+entry("thread_join");
-+entry("thread_exit");
++entry("clone");
+\ No newline at end of file
