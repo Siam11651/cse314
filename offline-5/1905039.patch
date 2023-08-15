@@ -79,7 +79,7 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..806e1af 100644
+index 959b778..b4f86a6 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -6,6 +6,8 @@
@@ -218,7 +218,7 @@ index 959b778..806e1af 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -681,3 +737,66 @@ procdump(void)
+@@ -681,3 +737,98 @@ procdump(void)
      printf("\n");
    }
  }
@@ -243,8 +243,6 @@ index 959b778..806e1af 100644
 +
 +  // copy saved user registers.
 +  *(np->trapframe) = *(p->trapframe);
-+
-+  np->trapframe->a0 = 0;
 +
 +  // Set argument
 +  np->trapframe->a0 = (uint64)arg;
@@ -283,7 +281,41 @@ index 959b778..806e1af 100644
 +
 +int join(int thread_id)
 +{
-+  return 0;
++  int wait, pid;
++  struct proc *p = myproc();
++
++  acquire(&wait_lock);
++
++  for(;;){
++    // Scan through table looking for child thread.
++    wait = 0;
++    for(struct proc *pp = proc; pp < &proc[NPROC]; pp++){
++      acquire(&pp->lock);
++      if(pp->isthread && pp->pid == thread_id){
++        wait = 1;
++        if(pp->state == ZOMBIE){
++          // Found one.
++          pid = pp->pid;
++          freeproc(pp);
++          release(&pp->lock);
++          release(&wait_lock);
++          return pid;
++        }
++        release(&pp->lock);
++        break;
++      }
++      release(&pp->lock);
++    }
++
++    // No point waiting if we don't have any children.
++    if(!wait || killed(p)){
++      release(&wait_lock);
++      return -1;
++    }
++    
++    // Wait for a child to exit.
++    sleep(p, &wait_lock);  //DOC: wait-sleep
++  }
 +}
 diff --git a/kernel/proc.h b/kernel/proc.h
 index d021857..8a3fa7b 100644
