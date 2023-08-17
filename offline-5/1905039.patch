@@ -79,7 +79,7 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..b4f86a6 100644
+index 959b778..2304491 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -6,6 +6,8 @@
@@ -218,7 +218,58 @@ index 959b778..b4f86a6 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -681,3 +737,98 @@ procdump(void)
+@@ -348,6 +404,37 @@ exit(int status)
+ {
+   struct proc *p = myproc();
+ 
++  if(!p->isthread){
++    acquire(&wait_lock);
++
++    for(;;){
++      // Scan through table looking for non-zombie child thread.
++      uint16 havekids = 0;
++      for(struct proc *pp = proc; pp < &proc[NPROC]; pp++){
++        if(pp->isthread && p->memid == pp->memid){
++          acquire(&pp->lock);
++          uint16 hadkids = havekids;
++          havekids = 1;
++          if(pp->state == ZOMBIE){
++            havekids = hadkids;
++            freeproc(pp);
++          }
++          release(&pp->lock);
++        }
++      }
++
++      // No point waiting if we don't have any children.
++      if(!havekids || killed(p)){
++        break;
++      }
++      
++      // Wait for a child to exit.
++      sleep(p, &wait_lock);  //DOC: wait-sleep
++    }
++
++    release(&wait_lock);
++  }
++
+   if(p == initproc)
+     panic("init exiting");
+ 
+@@ -371,7 +458,11 @@ exit(int status)
+   reparent(p);
+ 
+   // Parent might be sleeping in wait().
+-  wakeup(p->parent);
++  if(p->isthread){
++    wakeup(p->mother_proc);
++  }else{
++    wakeup(p->parent);
++  }
+   
+   acquire(&p->lock);
+ 
+@@ -681,3 +772,104 @@ procdump(void)
      printf("\n");
    }
  }
@@ -255,6 +306,12 @@ index 959b778..b4f86a6 100644
 +
 +  // Is a thread 🤡
 +  np->isthread = 1;
++
++  if(p->isthread){
++    np->mother_proc = p->mother_proc;
++  }else{
++    np->mother_proc = p;
++  }
 +
 +  // increment reference counts on open file descriptors.
 +  for(i = 0; i < NOFILE; i++)
@@ -307,7 +364,7 @@ index 959b778..b4f86a6 100644
 +      release(&pp->lock);
 +    }
 +
-+    // No point waiting if we don't have any children.
++    // No point waiting if we don't have the thread.
 +    if(!wait || killed(p)){
 +      release(&wait_lock);
 +      return -1;
@@ -318,16 +375,17 @@ index 959b778..b4f86a6 100644
 +  }
 +}
 diff --git a/kernel/proc.h b/kernel/proc.h
-index d021857..8a3fa7b 100644
+index d021857..7facf03 100644
 --- a/kernel/proc.h
 +++ b/kernel/proc.h
-@@ -104,4 +104,7 @@ struct proc {
+@@ -104,4 +104,8 @@ struct proc {
    struct file *ofile[NOFILE];  // Open files
    struct inode *cwd;           // Current directory
    char name[16];               // Process name (debugging)
 +  struct spinlock memlock;     // Lock for memory
 +  uint64 memid;                // Process memory id
 +  uint16 isthread;             // Check if a thread or not 🤡
++  struct proc *mother_proc;    // mother process
  };
 diff --git a/kernel/syscall.c b/kernel/syscall.c
 index ed65409..11f5585 100644
@@ -440,33 +498,47 @@ index 9f69783..29bf6ad 100644
  void
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
-index 0000000..8b8c1a9
+index 0000000..5fbe9cd
 --- /dev/null
 +++ b/user/test.c
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,40 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
 +
-+uint64 glob = 69;
++void do_work2(void *arg){
++    int i = 0;
 +
-+void foo(void *arg)
-+{
-+    for(int i = 0; i < 1000; ++i)
++    while(i < 100)
 +    {
 +        printf("b %d\n", i);
++        
++        ++i;
 +    }
 +
 +    thread_exit();
++    return;
 +}
 +
-+int main()
++void do_work1(void *arg){
++    thread_create(do_work2, 0);
++    int i = 0;
++
++    while(i < 100)
++    {
++        printf("b %d\n", i);
++        
++        ++i;
++    }
++
++    thread_exit();
++    return;
++}
++
++int main(int argc, char *argv[])
 +{
-+    int id = thread_create(foo, 0);
-+
-+    thread_join(id);
-+
-+    printf("bap\n");
++    thread_create(do_work1, 0);
++    // thread_create(do_work2, 0);
 +
 +    return 0;
 +}
