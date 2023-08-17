@@ -79,7 +79,7 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..2304491 100644
+index 959b778..06f81e0 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -6,6 +6,8 @@
@@ -175,13 +175,19 @@ index 959b778..2304491 100644
  // a user program that calls exec("/init")
  // assembled from ../user/initcode.S
  // od -t xC ../user/initcode
-@@ -260,16 +297,33 @@ int
+@@ -260,16 +297,41 @@ int
  growproc(int n)
  {
    uint64 sz;
 +  uint64 oldsz;
++  uint64 pid;
++  uint64 memid;
    struct proc *p = myproc();
  
++  acquire(&p->lock);
++  pid = p->pid;
++  release(&p->lock);
++  memid = p->memid;
    sz = p->sz;
 +  oldsz = sz;
 +  acquire(&p->memlock);
@@ -189,11 +195,6 @@ index 959b778..2304491 100644
      if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
        return -1;
 +    }else{
-+      acquire(&p->lock);
-+      uint64 pid = p->pid;
-+      release(&p->lock);
-+      uint64 memid = p->memid;
-+
 +      for(struct proc *iterator = proc; iterator < &proc[NPROC]; ++iterator){
 +        if(iterator->pid != pid && iterator->memid == memid){
 +          acquire(&iterator->memlock);
@@ -204,12 +205,19 @@ index 959b778..2304491 100644
      }
    } else if(n < 0){
      sz = uvmdealloc(p->pagetable, sz, sz + n);
++    for(struct proc *iterator = proc; iterator < &proc[NPROC]; ++iterator){
++      if(iterator->pid != pid && iterator->memid == memid){
++        acquire(&iterator->memlock);
++        iterator->sz = sz;
++        acquire(&iterator->memlock);
++      }
++    }
    }
 +  release(&p->memlock);
    p->sz = sz;
    return 0;
  }
-@@ -288,6 +342,8 @@ fork(void)
+@@ -288,6 +350,8 @@ fork(void)
      return -1;
    }
  
@@ -218,7 +226,7 @@ index 959b778..2304491 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -348,6 +404,37 @@ exit(int status)
+@@ -348,6 +412,36 @@ exit(int status)
  {
    struct proc *p = myproc();
  
@@ -231,11 +239,10 @@ index 959b778..2304491 100644
 +      for(struct proc *pp = proc; pp < &proc[NPROC]; pp++){
 +        if(pp->isthread && p->memid == pp->memid){
 +          acquire(&pp->lock);
-+          uint16 hadkids = havekids;
-+          havekids = 1;
 +          if(pp->state == ZOMBIE){
-+            havekids = hadkids;
 +            freeproc(pp);
++          }else{
++            havekids = 1;
 +          }
 +          release(&pp->lock);
 +        }
@@ -256,7 +263,7 @@ index 959b778..2304491 100644
    if(p == initproc)
      panic("init exiting");
  
-@@ -371,7 +458,11 @@ exit(int status)
+@@ -371,7 +465,11 @@ exit(int status)
    reparent(p);
  
    // Parent might be sleeping in wait().
@@ -269,7 +276,7 @@ index 959b778..2304491 100644
    
    acquire(&p->lock);
  
-@@ -681,3 +772,104 @@ procdump(void)
+@@ -681,3 +779,104 @@ procdump(void)
      printf("\n");
    }
  }
@@ -498,47 +505,38 @@ index 9f69783..29bf6ad 100644
  void
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
-index 0000000..5fbe9cd
+index 0000000..15b924b
 --- /dev/null
 +++ b/user/test.c
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,31 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
 +
-+void do_work2(void *arg){
-+    int i = 0;
-+
-+    while(i < 100)
++void do_work2(void *arg)
++{
++    for(int i = 0; i < 100; ++i)
 +    {
-+        printf("b %d\n", i);
-+        
-+        ++i;
++        printf("c %d\n", i);
 +    }
 +
 +    thread_exit();
-+    return;
 +}
 +
-+void do_work1(void *arg){
-+    thread_create(do_work2, 0);
-+    int i = 0;
-+
-+    while(i < 100)
++void do_work1(void *arg)
++{
++    for(int i = 0; i < 100; ++i)
 +    {
 +        printf("b %d\n", i);
-+        
-+        ++i;
 +    }
 +
 +    thread_exit();
-+    return;
 +}
 +
 +int main(int argc, char *argv[])
 +{
 +    thread_create(do_work1, 0);
-+    // thread_create(do_work2, 0);
++    thread_create(do_work2, 0);
 +
 +    return 0;
 +}
