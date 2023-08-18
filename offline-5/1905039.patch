@@ -79,7 +79,7 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..dea31a7 100644
+index 959b778..3aa34ce 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -6,6 +6,8 @@
@@ -187,7 +187,7 @@ index 959b778..dea31a7 100644
 +  pid = p->pid;
 +  release(&p->lock);
 +  memid = p->memid;
-+  acquire(&p->memlock);
++  acquire(p->memlock_used);
    sz = p->sz;
    if(n > 0){
      if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
@@ -209,20 +209,21 @@ index 959b778..dea31a7 100644
 +    }
    }
    p->sz = sz;
-+  release(&p->memlock);
++  release(p->memlock_used);
    return 0;
  }
  
-@@ -288,6 +345,8 @@ fork(void)
+@@ -288,6 +345,9 @@ fork(void)
      return -1;
    }
  
 +  np->memid = allocmemid();
++  np->memlock_used = &np->memlock;
 +
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -348,6 +407,36 @@ exit(int status)
+@@ -348,6 +408,36 @@ exit(int status)
  {
    struct proc *p = myproc();
  
@@ -259,7 +260,7 @@ index 959b778..dea31a7 100644
    if(p == initproc)
      panic("init exiting");
  
-@@ -371,7 +460,11 @@ exit(int status)
+@@ -371,7 +461,11 @@ exit(int status)
    reparent(p);
  
    // Parent might be sleeping in wait().
@@ -272,7 +273,7 @@ index 959b778..dea31a7 100644
    
    acquire(&p->lock);
  
-@@ -681,3 +774,104 @@ procdump(void)
+@@ -681,3 +775,105 @@ procdump(void)
      printf("\n");
    }
  }
@@ -289,6 +290,7 @@ index 959b778..dea31a7 100644
 +  }
 +
 +  np->memid = p->memid;
++  np->memlock_used = p->memlock_used;
 +
 +  // Mirror user memory from parent to child.
 +  uvmmirror(p->pagetable, np->pagetable, 0, p->sz);
@@ -378,14 +380,15 @@ index 959b778..dea31a7 100644
 +  }
 +}
 diff --git a/kernel/proc.h b/kernel/proc.h
-index d021857..7facf03 100644
+index d021857..c60a91a 100644
 --- a/kernel/proc.h
 +++ b/kernel/proc.h
-@@ -104,4 +104,8 @@ struct proc {
+@@ -104,4 +104,9 @@ struct proc {
    struct file *ofile[NOFILE];  // Open files
    struct inode *cwd;           // Current directory
    char name[16];               // Process name (debugging)
-+  struct spinlock memlock;     // Lock for memory
++  struct spinlock memlock;     // Memory lock for this process
++  struct spinlock *memlock_used;  // Pointer to memory lock of parent
 +  uint64 memid;                // Process memory id
 +  uint16 isthread;             // Check if a thread or not 🤡
 +  struct proc *mother_proc;    // mother process
@@ -525,7 +528,7 @@ index 0000000..0ead105
 \ No newline at end of file
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
-index 0000000..d69b815
+index 0000000..7dda62a
 --- /dev/null
 +++ b/user/test.c
 @@ -0,0 +1,149 @@
@@ -633,7 +636,7 @@ index 0000000..d69b815
 +
 +  int *x = (int*)malloc(sizeof(int)*n);
 +  int i = 0;
-+  for(int j = 0; j < 1000000000; ++j){
++  for(int j = 0; j < 500000000; ++j){
 +    x[i]++;
 +    i = (i + 1) % n;
 +  }
