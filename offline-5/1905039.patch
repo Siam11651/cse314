@@ -9,7 +9,7 @@ index 07216f3..61ed10a 100644
 +.vscode
 \ No newline at end of file
 diff --git a/Makefile b/Makefile
-index 39a99d7..0ac510e 100644
+index 39a99d7..a636f6b 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -56,7 +56,7 @@ LD = $(TOOLPREFIX)ld
@@ -38,15 +38,6 @@ index 39a99d7..0ac510e 100644
  
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
-@@ -153,7 +154,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
- 	then echo "-gdb tcp::$(GDBPORT)"; \
- 	else echo "-s -p $(GDBPORT)"; fi)
- ifndef CPUS
--CPUS := 3
-+CPUS := 1
- endif
- 
- QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 diff --git a/kernel/defs.h b/kernel/defs.h
 index a3c962b..1e9c9a3 100644
 --- a/kernel/defs.h
@@ -79,19 +70,10 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..3aa34ce 100644
+index 959b778..42105aa 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
-@@ -6,6 +6,8 @@
- #include "proc.h"
- #include "defs.h"
- 
-+struct spinlock growproc_lock;
-+
- struct cpu cpus[NCPU];
- 
- struct proc proc[NPROC];
-@@ -15,6 +17,9 @@ struct proc *initproc;
+@@ -15,6 +15,9 @@ struct proc *initproc;
  int nextpid = 1;
  struct spinlock pid_lock;
  
@@ -101,12 +83,11 @@ index 959b778..3aa34ce 100644
  extern void forkret(void);
  static void freeproc(struct proc *p);
  
-@@ -50,9 +55,12 @@ procinit(void)
+@@ -50,9 +53,11 @@ procinit(void)
    struct proc *p;
    
    initlock(&pid_lock, "nextpid");
 +  initlock(&memid_lock, "nextmemid");
-+  initlock(&growproc_lock, "growproc");
    initlock(&wait_lock, "wait_lock");
    for(p = proc; p < &proc[NPROC]; p++) {
        initlock(&p->lock, "proc");
@@ -114,7 +95,7 @@ index 959b778..3aa34ce 100644
        p->state = UNUSED;
        p->kstack = KSTACK((int) (p - proc));
    }
-@@ -102,6 +110,19 @@ allocpid()
+@@ -102,6 +107,19 @@ allocpid()
    return pid;
  }
  
@@ -134,7 +115,7 @@ index 959b778..3aa34ce 100644
  // Look in the process table for an UNUSED proc.
  // If found, initialize state required to run in the kernel,
  // and return with p->lock held.
-@@ -158,8 +179,12 @@ freeproc(struct proc *p)
+@@ -158,8 +176,12 @@ freeproc(struct proc *p)
    if(p->trapframe)
      kfree((void*)p->trapframe);
    p->trapframe = 0;
@@ -149,16 +130,17 @@ index 959b778..3aa34ce 100644
    p->pagetable = 0;
    p->sz = 0;
    p->pid = 0;
-@@ -169,6 +194,8 @@ freeproc(struct proc *p)
+@@ -169,6 +191,9 @@ freeproc(struct proc *p)
    p->killed = 0;
    p->xstate = 0;
    p->state = UNUSED;
 +  p->memid = 0;
 +  p->isthread = 0;
++  p->memlock_used = 0;
  }
  
  // Create a user page table for a given process, with no user memory,
-@@ -215,6 +242,16 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
+@@ -215,6 +240,16 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
    uvmfree(pagetable, sz);
  }
  
@@ -175,13 +157,14 @@ index 959b778..3aa34ce 100644
  // a user program that calls exec("/init")
  // assembled from ../user/initcode.S
  // od -t xC ../user/initcode
-@@ -260,17 +297,37 @@ int
+@@ -260,17 +295,39 @@ int
  growproc(int n)
  {
    uint64 sz;
 +  uint64 pid;
 +  uint64 memid;
    struct proc *p = myproc();
++  // printf("pid %d started grow\n", p->pid);
  
 +  acquire(&p->lock);
 +  pid = p->pid;
@@ -191,6 +174,7 @@ index 959b778..3aa34ce 100644
    sz = p->sz;
    if(n > 0){
      if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
++      release(p->memlock_used);
        return -1;
 +    }else{
 +      for(struct proc *iterator = proc; iterator < &proc[NPROC]; ++iterator){
@@ -223,7 +207,7 @@ index 959b778..3aa34ce 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -348,6 +408,36 @@ exit(int status)
+@@ -348,6 +408,45 @@ exit(int status)
  {
    struct proc *p = myproc();
  
@@ -231,22 +215,31 @@ index 959b778..3aa34ce 100644
 +    acquire(&wait_lock);
 +
 +    for(;;){
-+      // Scan through table looking for non-zombie child thread.
++      // Scan through table looking for child thread.
 +      uint16 havekids = 0;
-+      for(struct proc *pp = proc; pp < &proc[NPROC]; pp++){
++      for(struct proc *pp = proc; pp < &proc[NPROC]; ++pp){
 +        if(pp->isthread && p->memid == pp->memid){
 +          acquire(&pp->lock);
 +          if(pp->state == ZOMBIE){
++            // free zombie child
 +            freeproc(pp);
++            release(&pp->lock);
 +          }else{
++            if(!pp->killed){
++              // kill alive child
++              int pid = pp->pid;
++              release(&pp->lock);
++              kill(pid);
++            } else{
++              release(&pp->lock);
++            }
 +            havekids = 1;
 +          }
-+          release(&pp->lock);
 +        }
 +      }
 +
 +      // No point waiting if we don't have any children.
-+      if(!havekids || killed(p)){
++      if(!havekids){
 +        break;
 +      }
 +
@@ -260,7 +253,7 @@ index 959b778..3aa34ce 100644
    if(p == initproc)
      panic("init exiting");
  
-@@ -371,7 +461,11 @@ exit(int status)
+@@ -371,7 +470,11 @@ exit(int status)
    reparent(p);
  
    // Parent might be sleeping in wait().
@@ -273,7 +266,16 @@ index 959b778..3aa34ce 100644
    
    acquire(&p->lock);
  
-@@ -681,3 +775,105 @@ procdump(void)
+@@ -400,7 +503,7 @@ wait(uint64 addr)
+     // Scan through table looking for exited children.
+     havekids = 0;
+     for(pp = proc; pp < &proc[NPROC]; pp++){
+-      if(pp->parent == p){
++      if(pp->parent == p && !pp->isthread){
+         // make sure the child isn't still in exit() or swtch().
+         acquire(&pp->lock);
+ 
+@@ -681,3 +784,107 @@ procdump(void)
      printf("\n");
    }
  }
@@ -293,7 +295,9 @@ index 959b778..3aa34ce 100644
 +  np->memlock_used = p->memlock_used;
 +
 +  // Mirror user memory from parent to child.
++  acquire(p->memlock_used);
 +  uvmmirror(p->pagetable, np->pagetable, 0, p->sz);
++  release(p->memlock_used);
 +
 +  np->sz = p->sz;
 +
@@ -470,6 +474,18 @@ index 1de184e..9e3de5b 100644
 +  return 0;
 +}
 \ No newline at end of file
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..1c10ddf 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -63,6 +63,7 @@ usertrap(void)
+     // an interrupt will change sepc, scause, and sstatus,
+     // so enable only now that we're done with those registers.
+     intr_on();
++    // printf("interrupt enabled pid %d\n", p->pid);
+ 
+     syscall();
+   } else if((which_dev = devintr()) != 0){
 diff --git a/kernel/vm.c b/kernel/vm.c
 index 9f69783..29bf6ad 100644
 --- a/kernel/vm.c
@@ -528,13 +544,14 @@ index 0000000..0ead105
 \ No newline at end of file
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
-index 0000000..7dda62a
+index 0000000..ea9fc48
 --- /dev/null
 +++ b/user/test.c
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,147 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
++#include "user/mutex.h"
 +
 +struct balance {
 +  char name[32];
@@ -542,6 +559,8 @@ index 0000000..7dda62a
 +};
 +
 +volatile int total_balance = 0;
++struct mutex print_lock;
++struct mutex smem_lock;
 +
 +volatile unsigned int delay(unsigned int d) {
 +  unsigned int i;
@@ -559,28 +578,25 @@ index 0000000..7dda62a
 +
 +int *smem;
 +
-+void do_work(void *arg) {
++void do_work(void *arg)
++{
 +  int i;
 +  int old;
 +  int tid;
 +  tid = _tid++;
 +  // printf("&tid: %p\n", &tid);
 +
-+  while (locked) {
-+  }
-+  locked = 1;
++  mutex_lock(&print_lock);
 +  printf("thread %d started\n", tid);
-+  locked = 0;
++  mutex_unlock(&print_lock);
 +
 +  struct balance *b = (struct balance *)arg;
 +  // printf( "Starting do_work: s:%s\n", b->name);
 +  x[tid] = malloc(sizeof(int) * n);
 +
-+  while (locked) {
-+  }
-+  locked = 1;
++  mutex_lock(&print_lock);
 +  printf("thread %d malloced %p\n", tid, x[tid]);
-+  locked = 0;
++  mutex_unlock(&print_lock);
 +
 +  for (int i = 0; i < n; i++) {
 +    x[tid][i] = i;
@@ -600,11 +616,9 @@ index 0000000..7dda62a
 +  }
 +
 +  for (int i = 0; i < n; i++) {
-+    while (locked) {
-+    }
-+    locked = 1;
++    mutex_lock(&smem_lock);
 +    smem[i]++;
-+    locked = 0;
++    mutex_unlock(&smem_lock);
 +  }
 +
 +  // printf( "Done s:%x\n", b->name);
@@ -618,25 +632,22 @@ index 0000000..7dda62a
 +  tid = _tid++;
 +  // printf("&tid: %p\n", &tid);
 +
-+  while (locked) {
-+  }
-+  locked = 1;
++  mutex_lock(&print_lock);
 +  printf("thread %d started\n", tid);
-+  locked = 0;
++  mutex_unlock(&print_lock);
 +
 +  // printf( "Starting do_work: s:%s\n", b->name);
 +
 +  for (int i = 0; i < n; i++) {
-+    while (locked) {
-+    }
-+    locked = 1;
++    mutex_lock(&smem_lock);
 +    smem[i]++;
-+    locked = 0;
++    mutex_unlock(&smem_lock);
 +  }
 +
 +  int *x = (int*)malloc(sizeof(int)*n);
 +  int i = 0;
-+  for(int j = 0; j < 500000000; ++j){
++  // for(int j = 0; j < 1000000000; ++j){
++  for(; ; ){
 +    x[i]++;
 +    i = (i + 1) % n;
 +  }
@@ -647,7 +658,10 @@ index 0000000..7dda62a
 +  return;
 +}
 +
-+int main(int argc, char *argv[]) {
++int main(int argc, char *argv[])
++{
++  mutex_init(&print_lock);
++  mutex_init(&smem_lock);
 +
 +  struct balance b1 = {"b1", 3200};
 +  struct balance b2 = {"b2", 2800};
