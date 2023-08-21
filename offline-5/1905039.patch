@@ -9,7 +9,7 @@ index 07216f3..61ed10a 100644
 +.vscode
 \ No newline at end of file
 diff --git a/Makefile b/Makefile
-index 39a99d7..a636f6b 100644
+index 39a99d7..9205c3c 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -56,7 +56,7 @@ LD = $(TOOLPREFIX)ld
@@ -30,11 +30,13 @@ index 39a99d7..a636f6b 100644
  
  _%: %.o $(ULIB)
  	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $^
-@@ -132,6 +132,7 @@ UPROGS=\
+@@ -132,6 +132,9 @@ UPROGS=\
  	$U/_grind\
  	$U/_wc\
  	$U/_zombie\
 +	$U/_test\
++	$U/_mtxtest\
++	$U/_malloctest\
  
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
@@ -70,7 +72,7 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..42105aa 100644
+index 959b778..c2bd965 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -15,6 +15,9 @@ struct proc *initproc;
@@ -157,19 +159,13 @@ index 959b778..42105aa 100644
  // a user program that calls exec("/init")
  // assembled from ../user/initcode.S
  // od -t xC ../user/initcode
-@@ -260,17 +295,39 @@ int
- growproc(int n)
+@@ -261,16 +296,42 @@ growproc(int n)
  {
    uint64 sz;
-+  uint64 pid;
-+  uint64 memid;
    struct proc *p = myproc();
 +  // printf("pid %d started grow\n", p->pid);
  
 +  acquire(&p->lock);
-+  pid = p->pid;
-+  release(&p->lock);
-+  memid = p->memid;
 +  acquire(p->memlock_used);
    sz = p->sz;
    if(n > 0){
@@ -178,26 +174,35 @@ index 959b778..42105aa 100644
        return -1;
 +    }else{
 +      for(struct proc *iterator = proc; iterator < &proc[NPROC]; ++iterator){
-+        if(iterator->pid != pid && iterator->memid == memid){
-+          uvmmirror(p->pagetable, iterator->pagetable, iterator->sz, sz - iterator->sz);
-+          iterator->sz = sz;
++        if(iterator != p){
++          acquire(&iterator->lock);
++          if(iterator->memid == p->memid){
++            uvmmirror(p->pagetable, iterator->pagetable, iterator->sz, sz - iterator->sz);
++            iterator->sz = sz;
++          }
++          release(&iterator->lock);
 +        }
 +      }
      }
    } else if(n < 0){
      sz = uvmdealloc(p->pagetable, sz, sz + n);
 +    for(struct proc *iterator = proc; iterator < &proc[NPROC]; ++iterator){
-+      if(iterator->pid != pid && iterator->memid == memid){
-+        iterator->sz = sz;
++      if(iterator != p){
++        acquire(&iterator->lock);
++        if(iterator->memid == p->memid){
++          iterator->sz = sz;
++        }
++        release(&iterator->lock);
 +      }
 +    }
    }
    p->sz = sz;
 +  release(p->memlock_used);
++  release(&p->lock);
    return 0;
  }
  
-@@ -288,6 +345,9 @@ fork(void)
+@@ -288,6 +349,9 @@ fork(void)
      return -1;
    }
  
@@ -207,7 +212,7 @@ index 959b778..42105aa 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -348,6 +408,45 @@ exit(int status)
+@@ -348,6 +412,47 @@ exit(int status)
  {
    struct proc *p = myproc();
  
@@ -219,6 +224,7 @@ index 959b778..42105aa 100644
 +      uint16 havekids = 0;
 +      for(struct proc *pp = proc; pp < &proc[NPROC]; ++pp){
 +        if(pp->isthread && p->memid == pp->memid){
++          acquire(p->memlock_used);
 +          acquire(&pp->lock);
 +          if(pp->state == ZOMBIE){
 +            // free zombie child
@@ -235,6 +241,7 @@ index 959b778..42105aa 100644
 +            }
 +            havekids = 1;
 +          }
++          release(p->memlock_used);
 +        }
 +      }
 +
@@ -253,7 +260,7 @@ index 959b778..42105aa 100644
    if(p == initproc)
      panic("init exiting");
  
-@@ -371,7 +470,11 @@ exit(int status)
+@@ -371,7 +476,11 @@ exit(int status)
    reparent(p);
  
    // Parent might be sleeping in wait().
@@ -266,7 +273,7 @@ index 959b778..42105aa 100644
    
    acquire(&p->lock);
  
-@@ -400,7 +503,7 @@ wait(uint64 addr)
+@@ -400,7 +509,7 @@ wait(uint64 addr)
      // Scan through table looking for exited children.
      havekids = 0;
      for(pp = proc; pp < &proc[NPROC]; pp++){
@@ -275,7 +282,23 @@ index 959b778..42105aa 100644
          // make sure the child isn't still in exit() or swtch().
          acquire(&pp->lock);
  
-@@ -681,3 +784,107 @@ procdump(void)
+@@ -515,9 +624,14 @@ void
+ forkret(void)
+ {
+   static int first = 1;
++  struct proc *p = myproc();
+ 
+   // Still holding p->lock from scheduler.
+-  release(&myproc()->lock);
++  release(&p->lock);
++
++  // if(p->isthread){
++  //   release(p->memlock_used);
++  // }
+ 
+   if (first) {
+     // File system initialization must be run in the context of a
+@@ -681,3 +795,111 @@ procdump(void)
      printf("\n");
    }
  }
@@ -287,7 +310,9 @@ index 959b778..42105aa 100644
 +  struct proc *p = myproc();
 +
 +  // Allocate process.
++  // acquire(p->memlock_used);
 +  if((np = allocproc()) == 0){
++    release(p->memlock_used);
 +    return -1;
 +  }
 +
@@ -295,9 +320,7 @@ index 959b778..42105aa 100644
 +  np->memlock_used = p->memlock_used;
 +
 +  // Mirror user memory from parent to child.
-+  acquire(p->memlock_used);
 +  uvmmirror(p->pagetable, np->pagetable, 0, p->sz);
-+  release(p->memlock_used);
 +
 +  np->sz = p->sz;
 +
@@ -356,6 +379,7 @@ index 959b778..42105aa 100644
 +    // Scan through table looking for child thread.
 +    wait = 0;
 +    for(struct proc *pp = proc; pp < &proc[NPROC]; pp++){
++      acquire(p->memlock_used);
 +      acquire(&pp->lock);
 +      if(pp->isthread && pp->pid == thread_id){
 +        wait = 1;
@@ -364,13 +388,16 @@ index 959b778..42105aa 100644
 +          pid = pp->pid;
 +          freeproc(pp);
 +          release(&pp->lock);
++          release(p->memlock_used);
 +          release(&wait_lock);
 +          return pid;
 +        }
 +        release(&pp->lock);
++        release(p->memlock_used);
 +        break;
 +      }
 +      release(&pp->lock);
++      release(p->memlock_used);
 +    }
 +
 +    // No point waiting if we don't have the thread.
@@ -529,6 +556,300 @@ index 9f69783..29bf6ad 100644
  // mark a PTE invalid for user access.
  // used by exec for the user stack guard page.
  void
+diff --git a/user/malloctest.c b/user/malloctest.c
+new file mode 100644
+index 0000000..cb5f4eb
+--- /dev/null
++++ b/user/malloctest.c
+@@ -0,0 +1,148 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++struct balance {
++  char name[32];
++  int amount;
++};
++
++volatile int total_balance = 0;
++
++volatile unsigned int delay(unsigned int d) {
++  unsigned int i;
++  for (i = 0; i < d; i++) {
++    __asm volatile("nop" :::);
++  }
++
++  return i;
++}
++
++volatile int _tid = 0;
++int *x[2];
++volatile int locked = 0;
++int n = 10000;
++
++int *smem;
++
++void do_work(void *arg) {
++  int i;
++  int old;
++  int tid;
++  tid = _tid++;
++  // printf("&tid: %p\n", &tid);
++
++  while (locked) {
++  }
++  locked = 1;
++  printf("thread %d started\n", tid);
++  locked = 0;
++
++  struct balance *b = (struct balance *)arg;
++  // printf( "Starting do_work: s:%s\n", b->name);
++  x[tid] = malloc(sizeof(int) * n);
++
++  while (locked) {
++  }
++  locked = 1;
++  printf("thread %d malloced %p\n", tid, x[tid]);
++  locked = 0;
++
++  for (int i = 0; i < n; i++) {
++    x[tid][i] = i;
++  }
++
++  for (i = 0; i < b->amount; i++) {
++    // lock and mlock will be implemented by you.
++    // thread_spin_lock(&lock);
++    // thread_mutex_lock(&mlock);
++    old = total_balance;
++    delay(100000);
++    // if(old != total_balance)  printf("we will miss an update. old: %d
++    // total_balance: %d\n", old, total_balance);
++    total_balance = old + 1;
++    // thread_spin_unlock(&lock);
++    //  thread_mutex_lock(&mlock);
++  }
++
++  for (int i = 0; i < n; i++) {
++    while (locked) {
++    }
++    locked = 1;
++    smem[i]++;
++    locked = 0;
++  }
++
++  // printf( "Done s:%x\n", b->name);
++
++  thread_exit();
++  return;
++}
++
++void empty_task() {
++  int tid;
++  tid = _tid++;
++  // printf("&tid: %p\n", &tid);
++
++  while (locked) {
++  }
++  locked = 1;
++  printf("thread %d started\n", tid);
++  locked = 0;
++
++  // printf( "Starting do_work: s:%s\n", b->name);
++
++  for (int i = 0; i < n; i++) {
++    while (locked) {
++    }
++    locked = 1;
++    smem[i]++;
++    locked = 0;
++  }
++
++  int *x = (int*)malloc(sizeof(int)*n);
++  int i = 0;
++  while(1){
++    x[i]++;
++    i = (i + 1) % n;
++  }
++  // printf( "Done s:%x\n", b->name);
++
++  thread_exit();
++  return;
++}
++
++int main(int argc, char *argv[]) {
++
++  struct balance b1 = {"b1", 3200};
++  struct balance b2 = {"b2", 2800};
++
++  int thread1, thread2, r1, r2;
++
++  smem = malloc(sizeof(int) * n);
++
++  thread1 = thread_create(do_work, (void *)&b1);
++  thread2 = thread_create(do_work, (void *)&b2);
++  thread_create(empty_task, 0);
++
++  r1 = thread_join(thread1);
++  r2 = thread_join(thread2);
++
++  printf("Threads finished: (%d):%d, (%d):%d, shared balance:%d\n", thread1, r1,
++         thread2, r2, total_balance);
++  printf("Thread 1 malloced: %p\n", x[0]);
++  printf("Thread 2 malloced: %p\n", x[1]);
++  for (int i = 0; i < n; i++) {
++    if (x[0][i] != i || x[1][i] != i) {
++      printf("Doesn't match\n");
++      printf("%d vs %d for %d\n", x[0][i], x[0][i], i);
++      return 0;
++    }
++    if (smem[i] != 3) {
++      printf("is't 3\n");
++      return 0;
++    }
++  }
++  printf("Match\n");
++  exit(0);
++}
+\ No newline at end of file
+diff --git a/user/mtxtest.c b/user/mtxtest.c
+new file mode 100644
+index 0000000..d79d4f7
+--- /dev/null
++++ b/user/mtxtest.c
+@@ -0,0 +1,132 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "user/mutex.h"
++
++struct balance {
++  char name[32];
++  int amount;
++};
++
++volatile int total_balance = 0;
++
++volatile unsigned int delay(unsigned int d) {
++  unsigned int i;
++  for (i = 0; i < d; i++) {
++    __asm volatile("nop" :::);
++  }
++
++  return i;
++}
++
++volatile int _tid = 0;
++int *x[2];
++int n = 10000;
++
++struct mutex printlock;
++struct mutex smemlock;
++struct mutex mlock;
++struct mutex lock;
++
++int *smem;
++
++void do_work(void *arg) {
++  int i;
++  int old;
++  int tid;
++  tid = _tid++;
++
++  struct balance *b = (struct balance *)arg;
++  x[tid] = malloc(sizeof(int) * n);
++
++  for (int i = 0; i < n; i++) {
++    x[tid][i] = i;
++  }
++
++  for (i = 0; i < b->amount; i++) {
++    // lock and mlock will be implemented by you.
++    mutex_lock(&lock);
++    mutex_lock(&mlock);
++    old = total_balance;
++    delay(100000);
++    // if(old != total_balance)  printf("we will miss an update. old: %d
++    // total_balance: %d\n", old, total_balance);
++    total_balance = old + 1;
++    mutex_unlock(&lock);
++    mutex_unlock(&mlock);
++  }
++
++  for (int i = 0; i < n; i++) {
++    mutex_lock(&smemlock);
++    smem[i]++;
++    delay(100000);
++    mutex_unlock(&smemlock);
++  }
++
++  thread_exit();
++  return;
++}
++
++void empty_task() {
++
++  for (int i = 0; i < n; i++) {
++    mutex_lock(&smemlock);
++    smem[i]++;
++    delay(100000);
++    mutex_unlock(&smemlock);
++  }
++
++  int *x = (int*)malloc(sizeof(int)*n);
++
++  int i = 0;
++  while(1){
++    x[i]++;
++    i = (i + 1) % n;
++  }
++
++  thread_exit();
++  return;
++}
++
++int main(int argc, char *argv[]) {
++
++  struct balance b1 = {"b1", 3200};
++  struct balance b2 = {"b2", 2800};
++
++  int thread1, thread2, r1, r2;
++
++  mutex_init(&printlock);
++  mutex_init(&smemlock);
++  mutex_init(&mlock);
++  mutex_init(&lock);
++
++  smem = malloc(sizeof(int) * n);
++
++  thread2 = thread_create(do_work, (void *)&b2);
++  thread1 = thread_create(do_work, (void *)&b1);
++
++  for(int i = 0; i < 10; i++) {
++    thread_create(empty_task, 0);
++  }
++
++  r1 = thread_join(thread1);
++  r2 = thread_join(thread2);
++
++  printf("Threads finished: (%d):%d, (%d):%d, shared balance:%d\n", thread1, r1,
++         thread2, r2, total_balance);
++  printf("Thread 1 malloced: %p\n", x[0]);
++  printf("Thread 2 malloced: %p\n", x[1]);
++  for (int i = 0; i < n; i++) {
++    if (x[0][i] != i || x[1][i] != i) {
++      printf("Doesn't match\n");
++      printf("%d vs %d for %d\n", x[0][i], x[0][i], i);
++      return 0;
++    }
++    if (smem[i] != 12) {
++      printf("isn't 12\n", smem[i]);
++      return 0;
++    }
++  }
++  printf("Match\n");
++  exit(0);
++}
+\ No newline at end of file
 diff --git a/user/mutex.h b/user/mutex.h
 new file mode 100644
 index 0000000..0ead105
