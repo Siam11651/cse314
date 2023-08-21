@@ -41,7 +41,7 @@ index 39a99d7..9205c3c 100644
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
 diff --git a/kernel/defs.h b/kernel/defs.h
-index a3c962b..1e9c9a3 100644
+index a3c962b..3a36fb1 100644
 --- a/kernel/defs.h
 +++ b/kernel/defs.h
 @@ -89,6 +89,7 @@ int             growproc(int);
@@ -52,16 +52,18 @@ index a3c962b..1e9c9a3 100644
  int             kill(int);
  int             killed(struct proc*);
  void            setkilled(struct proc*);
-@@ -106,6 +107,8 @@ void            yield(void);
+@@ -106,6 +107,10 @@ void            yield(void);
  int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
  int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
  void            procdump(void);
 +int             clone(void (*)(void *), void *, void *);
 +int             join(int);
++int             futex_wait(uint64, int);
++int             futex_wake(uint64, uint64);
  
  // swtch.S
  void            swtch(struct context*, struct context*);
-@@ -165,7 +168,9 @@ void            uvmfirst(pagetable_t, uchar *, uint);
+@@ -165,7 +170,9 @@ void            uvmfirst(pagetable_t, uchar *, uint);
  uint64          uvmalloc(pagetable_t, uint64, uint64, int);
  uint64          uvmdealloc(pagetable_t, uint64, uint64);
  int             uvmcopy(pagetable_t, pagetable_t, uint64);
@@ -72,7 +74,7 @@ index a3c962b..1e9c9a3 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..c2bd965 100644
+index 959b778..ac3780f 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -15,6 +15,9 @@ struct proc *initproc;
@@ -298,7 +300,7 @@ index 959b778..c2bd965 100644
  
    if (first) {
      // File system initialization must be run in the context of a
-@@ -681,3 +795,111 @@ procdump(void)
+@@ -681,3 +795,153 @@ procdump(void)
      printf("\n");
    }
  }
@@ -410,6 +412,48 @@ index 959b778..c2bd965 100644
 +    sleep(p, &wait_lock);  //DOC: wait-sleep
 +  }
 +}
++
++int futex_wait(uint64 va, int value)
++{
++  struct proc *p = myproc();
++  pte_t *pte = walk(p->pagetable, va, 0);
++
++  acquire(p->memlock_used);
++
++  uint64 pa = PTE2PA(*pte) | (va && 0xFFF);
++
++  if(__sync_bool_compare_and_swap((int *)pa, value, value))
++  {
++    sleep((void *)pa, p->memlock_used);
++  }
++
++  release(p->memlock_used);
++
++  return 0;
++}
++
++int futex_wake(uint64 va, uint64 count)
++{
++  struct proc *p = myproc();
++  pte_t *pte = walk(p->pagetable, va, 0);
++
++  acquire(p->memlock_used);
++
++  uint64 pa = PTE2PA(*pte) | (va && 0xFFF);
++
++  for(struct proc *iterator = proc; count > 0 && iterator < &proc[NPROC]; ++iterator){
++    acquire(&iterator->lock);
++    if(iterator->chan == (void *)pa && iterator->state == SLEEPING){
++      iterator->state = RUNNABLE;
++      --count;
++    }
++    release(&iterator->lock);
++  }
++
++  release(p->memlock_used);
++
++  return 0;
++}
 diff --git a/kernel/proc.h b/kernel/proc.h
 index d021857..c60a91a 100644
 --- a/kernel/proc.h
@@ -425,46 +469,52 @@ index d021857..c60a91a 100644
 +  struct proc *mother_proc;    // mother process
  };
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index ed65409..9273d00 100644
+index ed65409..eaf3d25 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
-@@ -101,6 +101,9 @@ extern uint64 sys_unlink(void);
+@@ -101,6 +101,11 @@ extern uint64 sys_unlink(void);
  extern uint64 sys_link(void);
  extern uint64 sys_mkdir(void);
  extern uint64 sys_close(void);
 +extern uint64 sys_clone(void);
 +extern uint64 sys_join(void);
-+extern uint64 sys_yield(void);
++extern uint64 sys_sched_yield(void);
++extern uint64 sys_futex_wait(void);
++extern uint64 sys_futex_wake(void);
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -126,6 +129,9 @@ static uint64 (*syscalls[])(void) = {
+@@ -126,6 +131,11 @@ static uint64 (*syscalls[])(void) = {
  [SYS_link]    sys_link,
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
 +[SYS_clone]   sys_clone,
 +[SYS_join]    sys_join,
-+[SYS_yield]   sys_yield,
++[SYS_sched_yield]   sys_sched_yield,
++[SYS_futex_wait]    sys_futex_wait,
++[SYS_futex_wake]    sys_futex_wake,
  };
  
  void
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index bc5f356..2613187 100644
+index bc5f356..4496f52 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -20,3 +20,6 @@
+@@ -20,3 +20,8 @@
  #define SYS_link   19
  #define SYS_mkdir  20
  #define SYS_close  21
 +#define SYS_clone  22
 +#define SYS_join   23
-+#define SYS_yield  24
++#define SYS_sched_yield     24
++#define SYS_futex_wait      25
++#define SYS_futex_wake      26
 \ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 1de184e..9e3de5b 100644
+index 1de184e..547f57c 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
-@@ -89,3 +89,35 @@ sys_uptime(void)
+@@ -89,3 +89,59 @@ sys_uptime(void)
    release(&tickslock);
    return xticks;
  }
@@ -494,11 +544,35 @@ index 1de184e..9e3de5b 100644
 +}
 +
 +uint64
-+sys_yield(void)
++sys_sched_yield(void)
 +{
 +  yield();
 +
 +  return 0;
++}
++
++uint64
++sys_futex_wait()
++{
++  uint64 va;
++  int value;
++
++  argaddr(0, &va);
++  argaddr(1, (uint64 *)&value);
++
++  return futex_wait(va, value);
++}
++
++uint64
++sys_futex_wake(void)
++{
++  uint64 va;
++  uint64 count;
++
++  argaddr(0, &va);
++  argaddr(1, &count);
++
++  return futex_wake(va, count);
 +}
 \ No newline at end of file
 diff --git a/kernel/trap.c b/kernel/trap.c
@@ -556,6 +630,30 @@ index 9f69783..29bf6ad 100644
  // mark a PTE invalid for user access.
  // used by exec for the user stack guard page.
  void
+diff --git a/user/condvar.h b/user/condvar.h
+new file mode 100644
+index 0000000..3f1fe3b
+--- /dev/null
++++ b/user/condvar.h
+@@ -0,0 +1,4 @@
++struct condvar
++{
++    int signal;
++};
+\ No newline at end of file
+diff --git a/user/counting_semaphore.h b/user/counting_semaphore.h
+new file mode 100644
+index 0000000..2c50db9
+--- /dev/null
++++ b/user/counting_semaphore.h
+@@ -0,0 +1,6 @@
++struct counting_semaphore
++{
++    int count; 
++    struct mutex mtx;
++    struct condvar cv;
++};
+\ No newline at end of file
 diff --git a/user/malloctest.c b/user/malloctest.c
 new file mode 100644
 index 0000000..cb5f4eb
@@ -1041,27 +1139,31 @@ index c7b66c4..004ee01 100644
 +}
 \ No newline at end of file
 diff --git a/user/user.h b/user/user.h
-index 4d398d5..fe65f4d 100644
+index 4d398d5..929f325 100644
 --- a/user/user.h
 +++ b/user/user.h
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,8 @@
  struct stat;
 +struct thread_spinlock;
 +struct mutex;
++struct condvar;
++struct counting_semaphore;
  
  // system calls
  int fork(void);
-@@ -22,6 +24,9 @@ int getpid(void);
+@@ -22,6 +26,11 @@ int getpid(void);
  char* sbrk(int);
  int sleep(int);
  int uptime(void);
 +int clone(void (*)(void *), void *, void *);
 +int join(int);
-+int yield(void);
++int sched_yield(void);
++int futex_wait(void *, int);
++int futex_wake(void *, unsigned long long);
  
  // ulib.c
  int stat(const char*, struct stat*);
-@@ -39,3 +44,14 @@ void free(void*);
+@@ -39,3 +48,19 @@ void free(void*);
  int atoi(const char*);
  int memcmp(const void *, const void *, uint);
  void *memcpy(void *, const void *, uint);
@@ -1076,30 +1178,39 @@ index 4d398d5..fe65f4d 100644
 +void mutex_init(struct mutex *);
 +void mutex_lock(struct mutex *);
 +void mutex_unlock(struct mutex *);
++void cond_init(struct condvar *);
++void cond_wait(struct condvar *, struct mutex *);
++void counting_semaphore_init(struct counting_semaphore *, int);
++void counting_semaphore_post(struct counting_semaphore *);
++void counting_semaphore_wait(struct counting_semaphore *);
 \ No newline at end of file
 diff --git a/user/usys.pl b/user/usys.pl
-index 01e426e..2b7060d 100755
+index 01e426e..90fba11 100755
 --- a/user/usys.pl
 +++ b/user/usys.pl
-@@ -36,3 +36,6 @@ entry("getpid");
+@@ -36,3 +36,8 @@ entry("getpid");
  entry("sbrk");
  entry("sleep");
  entry("uptime");
 +entry("clone");
 +entry("join");
-+entry("yield");
++entry("sched_yield");
++entry("futex_wait");
++entry("futex_wake");
 \ No newline at end of file
 diff --git a/user/uthread.c b/user/uthread.c
 new file mode 100644
-index 0000000..2f390b1
+index 0000000..639d408
 --- /dev/null
 +++ b/user/uthread.c
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,157 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
 +#include "user/thread_spinlock.h"
 +#include "user/mutex.h"
++#include "user/condvar.h"
++#include "user/counting_semaphore.h"
 +
 +int thread_create(void (* start_routine)(void *), void *arg)
 +{
@@ -1173,7 +1284,7 @@ index 0000000..2f390b1
 +
 +    while(__sync_lock_test_and_set(&mtx->locked, 1) != 0)
 +    {
-+        yield();
++        sched_yield();
 +    }
 +
 +    mtx->owner = pid;
@@ -1193,5 +1304,61 @@ index 0000000..2f390b1
 +
 +    __sync_synchronize();
 +    __sync_lock_release(&mtx->locked);
++}
++
++void cond_init(struct condvar *cv)
++{
++    cv->signal = 0;
++}
++
++void cond_wait(struct condvar *cv, struct mutex *mtx)
++{
++    __sync_synchronize();
++    mutex_unlock(mtx);
++    futex_wait((void *)&cv->signal, 0);
++    mutex_lock(mtx);
++}
++
++void cond_signal(struct condvar *cv)
++{
++    __sync_synchronize();
++    futex_wake(&cv->signal, 1);
++}
++
++void cond_broadcast(struct condvar *cv)
++{
++    __sync_synchronize();
++    futex_wake(&cv->signal, (unsigned long long)-1);    // (unsigned long long)-1 = UINT64_MAX in std=c++20
++}
++
++void counting_semaphore_init(struct counting_semaphore *cs, int value)
++{
++    cs->count = value;
++    mutex_init(&cs->mtx);
++    cond_init(&cs->cv);
++}
++
++void counting_semaphore_post(struct counting_semaphore *cs)
++{
++    mutex_lock(&cs->mtx);
++
++    cs->count++;
++
++    cond_signal(&cs->cv);
++    mutex_unlock(&cs->mtx);
++}
++
++void counting_semaphore_wait(struct counting_semaphore *cs)
++{
++    mutex_lock(&cs->mtx);
++
++    while(cs->count == 0)
++    {
++        cond_wait(&cs->cv, &cs->mtx);
++    }
++
++    cs->count--;
++
++    mutex_unlock(&cs->mtx);
 +}
 \ No newline at end of file
