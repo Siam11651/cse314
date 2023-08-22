@@ -74,7 +74,7 @@ index a3c962b..3a36fb1 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..ac3780f 100644
+index 959b778..49e0987 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -15,6 +15,9 @@ struct proc *initproc;
@@ -300,7 +300,7 @@ index 959b778..ac3780f 100644
  
    if (first) {
      // File system initialization must be run in the context of a
-@@ -681,3 +795,153 @@ procdump(void)
+@@ -681,3 +795,161 @@ procdump(void)
      printf("\n");
    }
  }
@@ -333,7 +333,15 @@ index 959b778..ac3780f 100644
 +  np->trapframe->a0 = (uint64)arg;
 +
 +  // // Set stack pointer
-+  np->trapframe->sp = (uint64)stack + PGSIZE - 3 * sizeof(void*);
++  np->trapframe->sp = (uint64)stack + PGSIZE - sizeof(uint32) - sizeof(void*);
++  uint32 return_address = 0xffffffff;
++
++  if(copyout(np->pagetable, (uint64)stack + PGSIZE - sizeof(uint32), (char *)&return_address, sizeof(uint32))){
++    freeproc(np);
++    release(&np->lock);
++    release(p->memlock_used);
++    return -1;
++  }
 +
 +  // // Set thread routine
 +  np->trapframe->epc = (uint64)fcn;
@@ -643,13 +651,13 @@ index 0000000..3f1fe3b
 \ No newline at end of file
 diff --git a/user/counting_semaphore.h b/user/counting_semaphore.h
 new file mode 100644
-index 0000000..2c50db9
+index 0000000..93f7d41
 --- /dev/null
 +++ b/user/counting_semaphore.h
 @@ -0,0 +1,6 @@
 +struct counting_semaphore
 +{
-+    int count; 
++    int count;
 +    struct mutex mtx;
 +    struct condvar cv;
 +};
