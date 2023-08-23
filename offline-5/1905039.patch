@@ -9,7 +9,7 @@ index 07216f3..61ed10a 100644
 +.vscode
 \ No newline at end of file
 diff --git a/Makefile b/Makefile
-index 39a99d7..9205c3c 100644
+index 39a99d7..7bd1d85 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -56,7 +56,7 @@ LD = $(TOOLPREFIX)ld
@@ -30,13 +30,15 @@ index 39a99d7..9205c3c 100644
  
  _%: %.o $(ULIB)
  	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $^
-@@ -132,6 +132,9 @@ UPROGS=\
+@@ -132,6 +132,11 @@ UPROGS=\
  	$U/_grind\
  	$U/_wc\
  	$U/_zombie\
 +	$U/_test\
 +	$U/_mtxtest\
 +	$U/_malloctest\
++	$U/_cvtest\
++	$U/_semtest\
  
  fs.img: mkfs/mkfs README $(UPROGS)
  	mkfs/mkfs fs.img README $(UPROGS)
@@ -74,7 +76,7 @@ index a3c962b..3a36fb1 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..06bfe7c 100644
+index 959b778..c7f94f8 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -15,6 +15,9 @@ struct proc *initproc;
@@ -300,7 +302,16 @@ index 959b778..06bfe7c 100644
  
    if (first) {
      // File system initialization must be run in the context of a
-@@ -681,3 +795,161 @@ procdump(void)
+@@ -536,6 +650,8 @@ void
+ sleep(void *chan, struct spinlock *lk)
+ {
+   struct proc *p = myproc();
++
++  // printf("sleep %d\n", p->pid);
+   
+   // Must acquire p->lock in order to
+   // change p->state and then call sched.
+@@ -681,3 +797,163 @@ procdump(void)
      printf("\n");
    }
  }
@@ -424,11 +435,13 @@ index 959b778..06bfe7c 100644
 +int futex_wait(uint64 va, int value)
 +{
 +  struct proc *p = myproc();
-+  pte_t *pte = walk(p->pagetable, va, 0);
 +
 +  acquire(p->memlock_used);
 +
-+  uint64 pa = PTE2PA(*pte) | (va && 0xFFF);
++  uint64 va0 = PGROUNDDOWN(va);
++  uint64 pa = walkaddr(p->pagetable, va0) + va - va0;
++
++  // printf("futex wait %d %d\n", p->pid, *(int *)pa);
 +
 +  if(__sync_bool_compare_and_swap((int *)pa, value, value))
 +  {
@@ -443,11 +456,11 @@ index 959b778..06bfe7c 100644
 +int futex_wake(uint64 va, uint64 count)
 +{
 +  struct proc *p = myproc();
-+  pte_t *pte = walk(p->pagetable, va, 0);
 +
 +  acquire(p->memlock_used);
 +
-+  uint64 pa = PTE2PA(*pte) | (va && 0xFFF);
++  uint64 va0 = PGROUNDDOWN(va);
++  uint64 pa = walkaddr(p->pagetable, va0) + va - va0;
 +
 +  for(struct proc *iterator = proc; count > 0 && iterator < &proc[NPROC]; ++iterator){
 +    acquire(&iterator->lock);
@@ -519,7 +532,7 @@ index bc5f356..4496f52 100644
 +#define SYS_futex_wake      26
 \ No newline at end of file
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 1de184e..547f57c 100644
+index 1de184e..78703a3 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
 @@ -89,3 +89,59 @@ sys_uptime(void)
@@ -566,7 +579,7 @@ index 1de184e..547f57c 100644
 +  int value;
 +
 +  argaddr(0, &va);
-+  argaddr(1, (uint64 *)&value);
++  argint(1, &value);
 +
 +  return futex_wait(va, value);
 +}
@@ -640,13 +653,13 @@ index 9f69783..29bf6ad 100644
  void
 diff --git a/user/condvar.h b/user/condvar.h
 new file mode 100644
-index 0000000..3f1fe3b
+index 0000000..bbd47b0
 --- /dev/null
 +++ b/user/condvar.h
 @@ -0,0 +1,4 @@
 +struct condvar
 +{
-+    int signal;
++    int waiter_count;
 +};
 \ No newline at end of file
 diff --git a/user/counting_semaphore.h b/user/counting_semaphore.h
@@ -661,6 +674,98 @@ index 0000000..93f7d41
 +    struct mutex mtx;
 +    struct condvar cv;
 +};
+\ No newline at end of file
+diff --git a/user/cvtest.c b/user/cvtest.c
+new file mode 100644
+index 0000000..be589d2
+--- /dev/null
++++ b/user/cvtest.c
+@@ -0,0 +1,85 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "user/mutex.h"
++#include "user/condvar.h"
++
++struct condvar cv;
++struct mutex cv_lock;
++struct mutex print_lock;
++
++void signal_sender(void *arg)
++{
++    for(int i = 0; i < 5; ++i)
++    {
++        sleep(50);
++        mutex_lock(&print_lock);
++        printf("signaling\n");
++        mutex_unlock(&print_lock);
++        cond_signal(&cv);
++    }
++
++    thread_exit();
++}
++
++void broadcaster(void *arg)
++{
++    sleep(50);
++    mutex_lock(&print_lock);
++    printf("signaling\n");
++    mutex_unlock(&print_lock);
++    cond_broadcast(&cv);
++}
++
++void waiter(void *arg)
++{
++    unsigned int waiter_id = *(unsigned int *)arg;
++    
++    mutex_lock(&cv_lock);
++    cond_wait(&cv, &cv_lock);
++    mutex_unlock(&cv_lock);
++    mutex_lock(&print_lock);
++    printf("waiter %d working\n", waiter_id);
++    mutex_unlock(&print_lock);
++
++    thread_exit();
++}
++
++int main()
++{
++    cond_init(&cv);
++    mutex_init(&cv_lock);
++    mutex_init(&print_lock);
++
++    int tids[5], indices[5];
++
++    for(int i = 0; i < 5; ++i)
++    {
++        indices[i] = i;
++        tids[i] = thread_create(waiter, (int *)&indices[i]);
++    }
++
++    printf("testing signal\n");
++    thread_create(signal_sender, 0);
++
++    for(int i = 0; i < 5; ++i)
++    {
++        thread_join(tids[i]);
++    }
++
++    for(int i = 0; i < 5; ++i)
++    {
++        indices[i] = i;
++        tids[i] = thread_create(waiter, (int *)&indices[i]);
++    }
++
++    printf("testing broadcast\n");
++    thread_create(broadcaster, 0);
++
++    for(int i = 0; i < 5; ++i)
++    {
++        thread_join(tids[i]);
++    }
++
++    return 0;
++}
 \ No newline at end of file
 diff --git a/user/malloctest.c b/user/malloctest.c
 new file mode 100644
@@ -969,6 +1074,119 @@ index 0000000..0ead105
 +    int owner;          // owner pid
 +};
 \ No newline at end of file
+diff --git a/user/semtest.c b/user/semtest.c
+new file mode 100644
+index 0000000..ea346dd
+--- /dev/null
++++ b/user/semtest.c
+@@ -0,0 +1,106 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "user/mutex.h"
++#include "user/condvar.h"
++#include "user/counting_semaphore.h"
++
++struct counting_semaphore p_sem;
++struct counting_semaphore q_sem;
++struct counting_semaphore r_sem;
++struct counting_semaphore streak_sem;
++unsigned int streak = 0;
++
++void p(void *arg)
++{
++    for(; ; )
++    {
++        counting_semaphore_wait(&p_sem);
++        counting_semaphore_wait(&p_sem);
++        counting_semaphore_wait(&streak_sem);
++
++        ++streak;
++
++        if(streak % 3 == 0)
++        {
++            counting_semaphore_post(&streak_sem);
++            printf("p\n");
++        }
++        else
++        {
++            counting_semaphore_post(&streak_sem);
++            printf("p");
++        }
++
++        counting_semaphore_post(&q_sem);
++        counting_semaphore_post(&r_sem);
++    }
++}
++
++void q(void *arg)
++{
++    for(; ; )
++    {
++        counting_semaphore_wait(&q_sem);
++        counting_semaphore_wait(&q_sem);
++        counting_semaphore_wait(&streak_sem);
++
++        ++streak;
++
++        if(streak % 3 == 0)
++        {
++            counting_semaphore_post(&streak_sem);
++            printf("q\n");
++        }
++        else
++        {
++            counting_semaphore_post(&streak_sem);
++            printf("q");
++        }
++
++        counting_semaphore_post(&r_sem);
++        counting_semaphore_post(&p_sem);
++    }
++}
++
++void r(void *arg)
++{
++    for(; ; )
++    {
++        counting_semaphore_wait(&r_sem);
++        counting_semaphore_wait(&r_sem);
++        counting_semaphore_wait(&streak_sem);
++
++        ++streak;
++
++        if(streak % 3 == 0)
++        {
++            counting_semaphore_post(&streak_sem);
++            printf("r\n");
++        }
++        else
++        {
++            counting_semaphore_post(&streak_sem);
++            printf("r");
++        }
++
++        counting_semaphore_post(&p_sem);
++        counting_semaphore_post(&q_sem);
++    }
++}
++
++int main()
++{
++    counting_semaphore_init(&p_sem, 2);
++    counting_semaphore_init(&q_sem, 2);
++    counting_semaphore_init(&r_sem, 2);
++    counting_semaphore_init(&streak_sem, 1);
++
++    int id = thread_create(p, 0);
++
++    thread_create(q, 0);
++    thread_create(r, 0);
++    thread_join(id);
++
++    return 0;
++}
+\ No newline at end of file
 diff --git a/user/test.c b/user/test.c
 new file mode 100644
 index 0000000..ea9fc48
@@ -1147,7 +1365,7 @@ index c7b66c4..004ee01 100644
 +}
 \ No newline at end of file
 diff --git a/user/user.h b/user/user.h
-index 4d398d5..929f325 100644
+index 4d398d5..c6afb38 100644
 --- a/user/user.h
 +++ b/user/user.h
 @@ -1,4 +1,8 @@
@@ -1171,7 +1389,7 @@ index 4d398d5..929f325 100644
  
  // ulib.c
  int stat(const char*, struct stat*);
-@@ -39,3 +48,19 @@ void free(void*);
+@@ -39,3 +48,21 @@ void free(void*);
  int atoi(const char*);
  int memcmp(const void *, const void *, uint);
  void *memcpy(void *, const void *, uint);
@@ -1188,6 +1406,8 @@ index 4d398d5..929f325 100644
 +void mutex_unlock(struct mutex *);
 +void cond_init(struct condvar *);
 +void cond_wait(struct condvar *, struct mutex *);
++void cond_signal(struct condvar *);
++void cond_broadcast(struct condvar *);
 +void counting_semaphore_init(struct counting_semaphore *, int);
 +void counting_semaphore_post(struct counting_semaphore *);
 +void counting_semaphore_wait(struct counting_semaphore *);
@@ -1208,10 +1428,10 @@ index 01e426e..90fba11 100755
 \ No newline at end of file
 diff --git a/user/uthread.c b/user/uthread.c
 new file mode 100644
-index 0000000..639d408
+index 0000000..557332b
 --- /dev/null
 +++ b/user/uthread.c
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,174 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -1302,7 +1522,9 @@ index 0000000..639d408
 +
 +void mutex_unlock(struct mutex *mtx)
 +{
-+    if(mtx->owner != getpid())
++    int pid = getpid();
++
++    if(mtx->owner != pid)
 +    {
 +        printf("error: attempt to unlock mutex not owned\n");
 +        exit(-1);
@@ -1316,27 +1538,42 @@ index 0000000..639d408
 +
 +void cond_init(struct condvar *cv)
 +{
-+    cv->signal = 0;
++    cv->waiter_count = 0;
 +}
 +
 +void cond_wait(struct condvar *cv, struct mutex *mtx)
 +{
 +    __sync_synchronize();
++    // first add to pointer, then fetch count
++    // counts the number of waiters in cv->signal
++    int ref = __sync_add_and_fetch(&cv->waiter_count, 1);
 +    mutex_unlock(mtx);
-+    futex_wait((void *)&cv->signal, 0);
++    futex_wait(&cv->waiter_count, ref);
++    // release the waiting thread
++    // and decrement the count
++    __sync_fetch_and_sub(&cv->waiter_count, 1);
 +    mutex_lock(mtx);
 +}
 +
 +void cond_signal(struct condvar *cv)
 +{
 +    __sync_synchronize();
-+    futex_wake(&cv->signal, 1);
++
++    if(!__sync_bool_compare_and_swap(&cv->waiter_count, 0, 0))
++    {
++        futex_wake(&cv->waiter_count, 1);
++    }
 +}
 +
 +void cond_broadcast(struct condvar *cv)
 +{
 +    __sync_synchronize();
-+    futex_wake(&cv->signal, (unsigned long long)-1);    // (unsigned long long)-1 = UINT64_MAX in std=c++20
++
++    // if non waiting, no point in waking
++    if(!__sync_bool_compare_and_swap(&cv->waiter_count, 0, 0))
++    {
++        futex_wake(&cv->waiter_count, (unsigned long long)-1);    // (unsigned long long)-1 = UINT64_MAX in std=c++20
++    }
 +}
 +
 +void counting_semaphore_init(struct counting_semaphore *cs, int value)
