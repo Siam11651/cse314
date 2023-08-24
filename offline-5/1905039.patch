@@ -677,7 +677,7 @@ index 0000000..93f7d41
 \ No newline at end of file
 diff --git a/user/cvtest.c b/user/cvtest.c
 new file mode 100644
-index 0000000..be589d2
+index 0000000..2617359
 --- /dev/null
 +++ b/user/cvtest.c
 @@ -0,0 +1,85 @@
@@ -717,7 +717,7 @@ index 0000000..be589d2
 +void waiter(void *arg)
 +{
 +    unsigned int waiter_id = *(unsigned int *)arg;
-+    
++
 +    mutex_lock(&cv_lock);
 +    cond_wait(&cv, &cv_lock);
 +    mutex_unlock(&cv_lock);
@@ -1428,7 +1428,7 @@ index 01e426e..90fba11 100755
 \ No newline at end of file
 diff --git a/user/uthread.c b/user/uthread.c
 new file mode 100644
-index 0000000..557332b
+index 0000000..451eaa2
 --- /dev/null
 +++ b/user/uthread.c
 @@ -0,0 +1,174 @@
@@ -1475,9 +1475,9 @@ index 0000000..557332b
 +
 +    while(__sync_lock_test_and_set(&lk->locked, 1) != 0);
 +
-+    __sync_synchronize();
++    lk->owner = pid;
 +
-+    lk->locked = pid;
++    __sync_synchronize();
 +}
 +
 +void thread_spin_unlock(struct thread_spinlock *lk)
