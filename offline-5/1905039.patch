@@ -653,13 +653,14 @@ index 9f69783..29bf6ad 100644
  void
 diff --git a/user/condvar.h b/user/condvar.h
 new file mode 100644
-index 0000000..bbd47b0
+index 0000000..21bcc0f
 --- /dev/null
 +++ b/user/condvar.h
-@@ -0,0 +1,4 @@
+@@ -0,0 +1,5 @@
 +struct condvar
 +{
-+    int waiter_count;
++    unsigned int count;
++    unsigned int previous_count;
 +};
 \ No newline at end of file
 diff --git a/user/counting_semaphore.h b/user/counting_semaphore.h
@@ -1362,10 +1363,10 @@ index 01e426e..90fba11 100755
 \ No newline at end of file
 diff --git a/user/uthread.c b/user/uthread.c
 new file mode 100644
-index 0000000..a36ab31
+index 0000000..1d98d1e
 --- /dev/null
 +++ b/user/uthread.c
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,177 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -1470,42 +1471,47 @@ index 0000000..a36ab31
 +
 +void cond_init(struct condvar *cv)
 +{
-+    cv->waiter_count = 0;
++    cv->count = 0;
++    cv->previous_count = 0;
 +}
 +
 +void cond_wait(struct condvar *cv, struct mutex *mtx)
 +{
 +    __sync_synchronize();
-+    // first add to pointer, then fetch count
-+    // counts the number of waiters in cv->signal
-+    int ref = __sync_add_and_fetch(&cv->waiter_count, 1);
++    
++    // just fetch maintaining atomicity, add is not intended
++    unsigned int count = __sync_fetch_and_add(&cv->count, 0);
++    // set cv->prevoius_count maintaining atomicity
++    __sync_bool_compare_and_swap(&cv->previous_count, cv->previous_count, count);
++
 +    mutex_unlock(mtx);
-+    futex_wait(&cv->waiter_count, ref);
-+    // release the waiting thread
-+    // and decrement the count
-+    __sync_fetch_and_sub(&cv->waiter_count, 1);
++    futex_wait(&cv->count, count);
 +    mutex_lock(mtx);
 +}
 +
 +void cond_signal(struct condvar *cv)
 +{
 +    __sync_synchronize();
++    
++    // set equal to previous_count + 1 maintaining atomicity, don't want to increment previous_count
++    unsigned int count = __sync_fetch_and_add(&cv->previous_count, 0) + 1;
++    
++    // set cv->prevoius_count maintaining atomicity
++    __sync_bool_compare_and_swap(&cv->count, cv->count, count);
 +
-+    if(!__sync_bool_compare_and_swap(&cv->waiter_count, 0, 0))
-+    {
-+        futex_wake(&cv->waiter_count, 1);
-+    }
++    futex_wake(&cv->count, 1);
 +}
 +
 +void cond_broadcast(struct condvar *cv)
 +{
 +    __sync_synchronize();
++    
++    // set equal to previous_count + 1 maintaining atomicity, don't want to increment previous_count
++    unsigned int count = __sync_fetch_and_add(&cv->previous_count, 0) + 1;
 +
-+    // if non waiting, no point in waking
-+    if(!__sync_bool_compare_and_swap(&cv->waiter_count, 0, 0))
-+    {
-+        futex_wake(&cv->waiter_count, (unsigned long long)-1);    // (unsigned long long)-1 = UINT64_MAX in std=c++20
-+    }
++    // set cv->prevoius_count maintaining atomicity
++    __sync_bool_compare_and_swap(&cv->count, cv->count, count);
++    futex_wake(&cv->count, (unsigned long long)-1);    // (unsigned long long)-1 = UINT64_MAX in std=c++20
 +}
 +
 +void counting_semaphore_init(struct counting_semaphore *cs, int value)
