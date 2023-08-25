@@ -1363,10 +1363,10 @@ index 01e426e..90fba11 100755
 \ No newline at end of file
 diff --git a/user/uthread.c b/user/uthread.c
 new file mode 100644
-index 0000000..1d98d1e
+index 0000000..a1b8ad5
 --- /dev/null
 +++ b/user/uthread.c
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,165 @@
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
@@ -1400,31 +1400,26 @@ index 0000000..1d98d1e
 +{
 +    int pid = getpid();
 +
-+    if(lk->owner == pid)
-+    {
-+        printf("error: attempt to lock owned spinlock\n");
-+        exit(-1);
-+    }
-+
 +    while(__sync_lock_test_and_set(&lk->locked, 1) != 0);
 +
-+    lk->owner = pid;
-+
 +    __sync_synchronize();
++    __sync_fetch_and_add(&lk->owner, pid);
 +}
 +
 +void thread_spin_unlock(struct thread_spinlock *lk)
 +{
-+    if(lk->owner != getpid())
++    int pid = getpid();
++
++    if(__sync_bool_compare_and_swap(&lk->owner, pid, 0))
++    {
++        __sync_synchronize();
++        __sync_lock_release(&lk->locked);
++    }
++    else
 +    {
 +        printf("error: attempt to unlock spinlock not owned\n");
 +        exit(-1);
 +    }
-+
-+    lk->owner = 0;
-+
-+    __sync_synchronize();
-+    __sync_lock_release(&lk->locked);
 +}
 +
 +void mutex_init(struct mutex *mtx)
@@ -1437,36 +1432,29 @@ index 0000000..1d98d1e
 +{
 +    int pid = getpid();
 +
-+    if(mtx->owner == pid)
-+    {
-+        printf("error: attempt to lock owned mutex\n");
-+        exit(-1);
-+    }
-+
 +    while(__sync_lock_test_and_set(&mtx->locked, 1) != 0)
 +    {
 +        sched_yield();
 +    }
 +
-+    mtx->owner = pid;
-+
 +    __sync_synchronize();
++    __sync_fetch_and_add(&mtx->owner, pid);
 +}
 +
 +void mutex_unlock(struct mutex *mtx)
 +{
 +    int pid = getpid();
 +
-+    if(mtx->owner != pid)
++    if(__sync_bool_compare_and_swap(&mtx->owner, pid, 0))
++    {
++        __sync_synchronize();
++        __sync_lock_release(&mtx->locked);
++    }
++    else
 +    {
 +        printf("error: attempt to unlock mutex not owned\n");
 +        exit(-1);
 +    }
-+
-+    mtx->owner = 0;
-+
-+    __sync_synchronize();
-+    __sync_lock_release(&mtx->locked);
 +}
 +
 +void cond_init(struct condvar *cv)
