@@ -76,7 +76,7 @@ index a3c962b..3a36fb1 100644
  void            uvmclear(pagetable_t, uint64);
  pte_t *         walk(pagetable_t, uint64, int);
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 959b778..c7f94f8 100644
+index 959b778..68b8299 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -15,6 +15,9 @@ struct proc *initproc;
@@ -163,7 +163,7 @@ index 959b778..c7f94f8 100644
  // a user program that calls exec("/init")
  // assembled from ../user/initcode.S
  // od -t xC ../user/initcode
-@@ -261,16 +296,42 @@ growproc(int n)
+@@ -261,16 +296,47 @@ growproc(int n)
  {
    uint64 sz;
    struct proc *p = myproc();
@@ -175,6 +175,7 @@ index 959b778..c7f94f8 100644
    if(n > 0){
      if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
 +      release(p->memlock_used);
++      release(&p->lock);
        return -1;
 +    }else{
 +      for(struct proc *iterator = proc; iterator < &proc[NPROC]; ++iterator){
@@ -194,6 +195,10 @@ index 959b778..c7f94f8 100644
 +      if(iterator != p){
 +        acquire(&iterator->lock);
 +        if(iterator->memid == p->memid){
++          if(PGROUNDUP(sz) < PGROUNDUP(iterator->sz)){
++            int npages = (PGROUNDUP(iterator->sz) - PGROUNDUP(sz)) / PGSIZE;
++            uvmunmap(iterator->pagetable, PGROUNDUP(sz), npages, 0);
++          }
 +          iterator->sz = sz;
 +        }
 +        release(&iterator->lock);
@@ -206,7 +211,7 @@ index 959b778..c7f94f8 100644
    return 0;
  }
  
-@@ -288,6 +349,9 @@ fork(void)
+@@ -288,6 +354,9 @@ fork(void)
      return -1;
    }
  
@@ -216,7 +221,7 @@ index 959b778..c7f94f8 100644
    // Copy user memory from parent to child.
    if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
      freeproc(np);
-@@ -348,6 +412,47 @@ exit(int status)
+@@ -348,6 +417,47 @@ exit(int status)
  {
    struct proc *p = myproc();
  
@@ -264,7 +269,7 @@ index 959b778..c7f94f8 100644
    if(p == initproc)
      panic("init exiting");
  
-@@ -371,7 +476,11 @@ exit(int status)
+@@ -371,7 +481,11 @@ exit(int status)
    reparent(p);
  
    // Parent might be sleeping in wait().
@@ -277,7 +282,7 @@ index 959b778..c7f94f8 100644
    
    acquire(&p->lock);
  
-@@ -400,7 +509,7 @@ wait(uint64 addr)
+@@ -400,7 +514,7 @@ wait(uint64 addr)
      // Scan through table looking for exited children.
      havekids = 0;
      for(pp = proc; pp < &proc[NPROC]; pp++){
@@ -286,7 +291,7 @@ index 959b778..c7f94f8 100644
          // make sure the child isn't still in exit() or swtch().
          acquire(&pp->lock);
  
-@@ -515,9 +624,14 @@ void
+@@ -515,9 +629,14 @@ void
  forkret(void)
  {
    static int first = 1;
@@ -302,7 +307,7 @@ index 959b778..c7f94f8 100644
  
    if (first) {
      // File system initialization must be run in the context of a
-@@ -536,6 +650,8 @@ void
+@@ -536,6 +655,8 @@ void
  sleep(void *chan, struct spinlock *lk)
  {
    struct proc *p = myproc();
@@ -311,7 +316,7 @@ index 959b778..c7f94f8 100644
    
    // Must acquire p->lock in order to
    // change p->state and then call sched.
-@@ -681,3 +797,163 @@ procdump(void)
+@@ -681,3 +802,163 @@ procdump(void)
      printf("\n");
    }
  }
